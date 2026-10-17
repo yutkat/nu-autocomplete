@@ -36,12 +36,15 @@ const SYMBOLS = r#'!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~'#
 # Symbols and Space are also bound with `shift`, which is how terminals that
 # report the Shift key for shifted symbols deliver them; the inserted char is
 # the same either way.
-export def trigger-keys [trigger: string = "all"]: nothing -> list<record<id: string, modifier: string, keycode: string, char: string>> {
+#
+# `key` is the normalized `<modifier> <keycode>` used to look up existing
+# bindings: each keycode stands for its lowercased char.
+export def trigger-keys [trigger: string = "all"]: nothing -> list<record<id: string, modifier: string, keycode: string, char: string, key: string>> {
     let space = [
         {id: space, modifier: none, keycode: space, char: " "}
         {id: shift_space, modifier: shift, keycode: space, char: " "}
     ]
-    match $trigger {
+    let keys = match $trigger {
         "space" => $space
         "all" => {
             let lower = (seq char a z)
@@ -66,6 +69,7 @@ export def trigger-keys [trigger: string = "all"]: nothing -> list<record<id: st
         }
         _ => (error make {msg: $"unknown trigger set '($trigger)'; expected 'all' or 'space'"})
     }
+    $keys | insert key {|k| $"($k.modifier) char_($k.char | str lowercase)" }
 }
 
 # Normalize a keycode the way Nushell parses it, so `char_A`, `char_a` and
@@ -184,10 +188,15 @@ def split-top-level [text: string]: nothing -> list<string> {
 export def reedline-default [mode: string, modifier: string, keycode: string]: nothing -> any {
     let mod = normalize-modifier $modifier
     let key = normalize-keycode $keycode
-    let found = keybindings default | where mode == $mode | where {|kb|
+    # Match the keycode first with column-wise string ops (keeping the forms
+    # normalize-keycode rewrites), so the custom commands only run on the few
+    # remaining entries.
+    let found = keybindings default | where mode == $mode
+    | str replace --regex "^Char\\('(.*)'\\)$" 'char_$1' code | str replace --regex '^F\((\d+)\)$' 'f$1' code | str lowercase code
+    | where code == $key or code starts-with "char_u" or code == "space"
+    | where {|kb|
         let m = $kb.modifier | str replace --regex '^KeyModifiers\((.*)\)$' '$1' | str replace "0x0" none | str replace --all " | " "_"
-        let k = $kb.code | str replace --regex "^Char\\('(.*)'\\)$" 'char_$1' | str replace --regex '^F\((\d+)\)$' 'f$1'
-        (normalize-modifier $m) == $mod and (normalize-keycode $k) == $key
+        (normalize-modifier $m) == $mod and (normalize-keycode $kb.code) == $key
     }
     if ($found | is-empty) {
         return (if $mod == none and $key == enter { {send: enter} } else { {send: none} })
@@ -199,30 +208,41 @@ export def reedline-default [mode: string, modifier: string, keycode: string]: n
     $event
 }
 
-# The binding (other than ours) that currently handles a key in a mode: the
-# last matching entry wins, as in Nushell. Returns null when only the
-# built-in Reedline default applies.
-export def find-existing [mode: string, modifier: string, keycode: string]: list -> any {
-    let bindings = $in
-    let mod = normalize-modifier $modifier
-    let key = normalize-keycode $keycode
-    $bindings
-    | where {|kb| not ($kb | is-ours) }
+# Normalized `<modifier> <keycode>` lookup key.
+def key-id [modifier: string, keycode: string]: nothing -> string {
+    $"(normalize-modifier $modifier) (normalize-keycode $keycode)"
+}
+
+# The bindings (other than ours) that apply to a mode, grouped by key-id in
+# their original order. Build it once per mode: normalizing every binding
+# for each looked-up key made enable take hundreds of milliseconds.
+def key-index [mode: string]: list -> record {
+    where {|kb| not ($kb | is-ours) }
     | where {|kb| $kb | applies-to $mode }
-    | where {|kb| (normalize-modifier ($kb.modifier | into string)) == $mod }
-    | where {|kb| (normalize-keycode ($kb.keycode | into string)) == $key }
-    | last
+    | group-by {|kb| key-id ($kb.modifier | into string) ($kb.keycode | into string) }
+}
+
+# The binding (other than ours) that currently handles a key in a key-index:
+# the last matching entry wins, as in Nushell. Returns null when only the
+# built-in Reedline default applies.
+def lookup [modifier: string, keycode: string]: record -> any {
+    get --optional (key-id $modifier $keycode) | default [] | last
+}
+
+# The binding (other than ours) that currently handles a key in a mode.
+export def find-existing [mode: string, modifier: string, keycode: string]: list -> any {
+    key-index $mode | lookup $modifier $keycode
 }
 
 # The event the existing binding sends, or `fallback` for a Reedline default.
-def existing-event [existing: list, mode: string, modifier: string, keycode: string, fallback: any]: nothing -> any {
-    let found = $existing | find-existing $mode $modifier $keycode
+def existing-event [index: record, modifier: string, keycode: string, fallback: any]: nothing -> any {
+    let found = $index | lookup $modifier $keycode
     if $found == null { $fallback } else { $found.event }
 }
 
 # The event the existing binding sends, or the Reedline default for the key.
-def previous-event [existing: list, mode: string, modifier: string, keycode: string]: nothing -> any {
-    let found = $existing | find-existing $mode $modifier $keycode
+def previous-event [index: record, mode: string, modifier: string, keycode: string]: nothing -> any {
+    let found = $index | lookup $modifier $keycode
     if $found == null { reedline-default $mode $modifier $keycode } else { $found.event }
 }
 
@@ -280,20 +300,21 @@ def can-select []: any -> bool {
     }
 }
 
-# `accept` lists the parsed accept keys. Each accepts the highlighted
-# candidate while a menu has candidates and then reopens the menu, except
+# `index` is the key-index of the existing bindings in `mode`; `accept` lists
+# the parsed accept keys. Each accepts the highlighted candidate while a menu
+# has candidates and then reopens the menu, except
 # Enter (a reopened menu would make the next Enter accept again instead of
 # running the line) and keys whose previous event can select.
-export def control-bindings [existing: list, mode: string, accept: list]: nothing -> list<record> {
-    let enter = existing-event $existing $mode none enter {send: enter}
-    let tab = existing-event $existing $mode none tab {send: none}
-    let left = existing-event $existing $mode none left {send: left}
+def control-bindings [index: record, mode: string, accept: list]: nothing -> list<record> {
+    let enter = existing-event $index none enter {send: enter}
+    let tab = existing-event $index none tab {send: none}
+    let left = existing-event $index none left {send: left}
     let menu = {send: menu, name: $MENU}
     let is_accept = {|keycode| $accept | any {|k| (normalize-modifier $k.modifier) == none and (normalize-keycode $k.keycode) == $keycode } }
     let accepts = $accept | each {|k|
         let mod = normalize-modifier $k.modifier
         let id = if $mod == none { $k.keycode } else { $"($mod)_($k.keycode)" }
-        let previous = previous-event $existing $mode $k.modifier $k.keycode
+        let previous = previous-event $index $mode $k.modifier $k.keycode
         let event = if ($mod == none and (normalize-keycode $k.keycode) == enter) or ($previous | can-select) {
             {until: [{send: menuaccept} $previous]}
         } else {
@@ -312,7 +333,7 @@ export def control-bindings [existing: list, mode: string, accept: list]: nothin
     # before, like Left: Reedline's default Right is swallowed by an open IDE
     # menu (`MenuRight`).
     let right_binding = if (do $is_accept right) { [] } else {
-        let right = previous-event $existing $mode none right
+        let right = previous-event $index $mode none right
         [{id: right, modifier: none, keycode: right, event: {until: [[{send: esc} $right] $right]}}]
     }
     $enter_binding ++ $right_binding ++ [
@@ -335,14 +356,11 @@ export def control-bindings [existing: list, mode: string, accept: list]: nothin
 # Trigger keys that already have a (non nu-autocomplete) binding in a mode are
 # left alone and reported in `skipped`, so user bindings keep working.
 export def generate [trigger: string, existing: list, accept_keys: list<string> = $DEFAULT_ACCEPT_KEYS]: nothing -> record<bindings: list, skipped: list> {
-    let others = $existing | where {|kb| not ($kb | is-ours) }
     let accept = parse-accept-keys $accept_keys
     let keys = trigger-keys $trigger
     let per_mode = $MODES | each {|mode|
-        let triggers = $keys | each {|k|
-            let taken = ($others | find-existing $mode $k.modifier $k.keycode) != null
-            {key: $k, taken: $taken}
-        }
+        let index = $existing | key-index $mode
+        let triggers = $keys | each {|k| {key: $k, taken: ($k.key in $index)} }
         let bound = $triggers | where not taken | each {|t|
             {
                 name: $"($NAME_PREFIX)($mode)_($t.key.id)"
@@ -352,7 +370,7 @@ export def generate [trigger: string, existing: list, accept_keys: list<string> 
                 event: (trigger-event $t.key.char)
             }
         }
-        let controls = control-bindings $others $mode $accept | each {|c|
+        let controls = control-bindings $index $mode $accept | each {|c|
             {name: $"($NAME_PREFIX)($mode)_($c.id)", modifier: $c.modifier, keycode: $c.keycode, mode: $mode, event: $c.event}
         }
         let skipped = $triggers | where taken | each {|t| {mode: $mode, modifier: $t.key.modifier, keycode: $t.key.keycode} }

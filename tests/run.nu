@@ -140,6 +140,25 @@ def "test control keys fall back to reedline defaults" [] {
     assert equal ($b | kb-for vi_insert control char_y | get 0.event) (accept-event {send: none})
 }
 
+def "test trigger key lookup keys are normalized" [] {
+    for k in (trigger-keys all) {
+        assert equal $k.key $"(normalize-modifier $k.modifier) (normalize-keycode $k.keycode)" $k.id
+    }
+}
+
+def "test the last matching existing binding wins" [] {
+    let user = [
+        (user-binding first Control char_A emacs {send: up})
+        (user-binding last control_none char_u61 [emacs vi_insert] {send: down})
+        (user-binding normal control char_a vi_normal {send: left})
+        (user-binding nu_autocomplete_emacs_control_a control char_a emacs {send: right})
+    ]
+    assert equal ($user | find-existing emacs control char_a | get name) last
+    assert equal ($user | find-existing vi_insert Control char_A | get name) last
+    assert equal ($user | first 1 | find-existing vi_insert control char_a) null
+    assert equal ($user | find-existing emacs none char_a) null
+}
+
 def "test ctrl y chains to the existing binding" [] {
     let my_y = {edit: insertstring, value: "yy"}
     let user = [(user-binding my_y Control char_Y vi_insert $my_y)]
@@ -356,6 +375,8 @@ const TESTS = [
     "test trigger keys already bound by the user are skipped"
     "test control keys chain to the existing binding"
     "test control keys fall back to reedline defaults"
+    "test trigger key lookup keys are normalized"
+    "test the last matching existing binding wins"
     "test ctrl y chains to the existing binding"
     "test accept key specs parse to modifier and keycode"
     "test invalid accept key specs are rejected"
@@ -396,6 +417,8 @@ def run-test [name: string]: nothing -> any {
             "test trigger keys already bound by the user are skipped" => { test trigger keys already bound by the user are skipped }
             "test control keys chain to the existing binding" => { test control keys chain to the existing binding }
             "test control keys fall back to reedline defaults" => { test control keys fall back to reedline defaults }
+            "test trigger key lookup keys are normalized" => { test trigger key lookup keys are normalized }
+            "test the last matching existing binding wins" => { test the last matching existing binding wins }
             "test ctrl y chains to the existing binding" => { test ctrl y chains to the existing binding }
             "test accept key specs parse to modifier and keycode" => { test accept key specs parse to modifier and keycode }
             "test invalid accept key specs are rejected" => { test invalid accept key specs are rejected }
