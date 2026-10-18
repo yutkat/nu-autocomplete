@@ -13,7 +13,7 @@ export const MODES = [emacs vi_insert]
 export const MENU = "ide_completion_menu"
 
 # Keys that accept the highlighted candidate unless `enable --accept-keys` says otherwise.
-export const DEFAULT_ACCEPT_KEYS = [right ctrl+y]
+export const DEFAULT_ACCEPT_KEYS = [ctrl+y]
 
 # Keys that cannot be accept keys: nu-autocomplete binds them for another role
 # (Tab, Left) or the open menu needs them (Shift+Tab, Esc, Backspace, Up, Down).

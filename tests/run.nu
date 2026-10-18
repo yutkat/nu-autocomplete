@@ -97,7 +97,7 @@ def "test generated bindings are named, scoped to emacs and vi insert" [] {
     assert ($b | all {|kb| $kb | is-ours })
     assert equal ($b | get mode | uniq | sort) [emacs vi_insert]
     assert equal ($b | get name | uniq | length) ($b | length) "names are unique"
-    # 128 trigger keys + enter/tab/right/ctrl_y/left, per mode
+    # 128 trigger keys + enter/right/tab/left/ctrl_y, per mode
     assert equal ($b | length) (2 * (128 + 5))
     assert equal $gen.skipped []
 }
@@ -134,7 +134,8 @@ def "test control keys fall back to reedline defaults" [] {
     let b = generate space [] | get bindings
     assert equal ($b | kb-for emacs none enter | get 0.event) {until: [[{send: esc} {send: enter}] {send: enter}]}
     assert equal ($b | kb-for emacs none tab | get 0.event) {until: [[{until: [{send: menunext} {send: none}]} {send: menu, name: ide_completion_menu}] {send: none}]}
-    assert equal ($b | kb-for emacs none right | get 0.event) (accept-event {until: [{send: historyhintcomplete} {send: right}]})
+    let right = {until: [{send: historyhintcomplete} {send: right}]}
+    assert equal ($b | kb-for emacs none right | get 0.event) {until: [[{send: esc} $right] $right]}
     assert equal ($b | kb-for emacs none left | get 0.event) {until: [[{send: esc} {send: left}] {send: left}]}
     assert equal ($b | kb-for emacs control char_y | get 0.event) (accept-event {edit: pastecutbufferbefore})
     assert equal ($b | kb-for vi_insert control char_y | get 0.event) (accept-event {send: none})
@@ -192,11 +193,18 @@ def "test duplicate accept keys are dropped" [] {
     assert equal (parse-accept-keys [ctrl+y control+Y right]) [{modifier: control, keycode: char_y} {modifier: none, keycode: right}]
 }
 
-def "test default accept keys are right and ctrl y" [] {
-    assert equal $DEFAULT_ACCEPT_KEYS [right ctrl+y]
+def "test default accept key is ctrl y" [] {
+    assert equal $DEFAULT_ACCEPT_KEYS [ctrl+y]
     let b = generate space [] | get bindings
+    assert equal ($b | kb-for emacs control char_y | get 0.event) (accept-event {edit: pastecutbufferbefore})
+    assert equal ($b | kb-for emacs none right | length) 1
+}
+
+def "test right as accept key accepts" [] {
+    let b = generate space [] [right ctrl+y] | get bindings
     let right = {until: [{send: historyhintcomplete} {send: right}]}
     assert equal ($b | kb-for emacs none right | get 0.event) (accept-event $right)
+    assert equal ($b | kb-for emacs none right | length) 1
     assert equal ($b | kb-for emacs control char_y | get 0.event) (accept-event {edit: pastecutbufferbefore})
 }
 
@@ -285,7 +293,7 @@ def --env "test enable with other accept keys replaces bindings" [] {
     assert equal (nu-autocomplete status | get keybindings_by_mode) {emacs: 132, vi_insert: 132}
     assert equal ($env.config.keybindings | ours | kb-for emacs none enter | get 0.event) {until: [{send: menuaccept} {send: enter}]}
     nu-autocomplete enable
-    assert equal (nu-autocomplete status | get accept_keys) [right ctrl+y]
+    assert equal (nu-autocomplete status | get accept_keys) [ctrl+y]
     assert equal ($env.config.keybindings | ours | length) 266
     assert equal ($env.config.keybindings | ours | get name | uniq | length) 266
     assert equal ($env.config.keybindings | ours | kb-for emacs none enter | get 0.event) {until: [[{send: esc} {send: enter}] {send: enter}]}
@@ -381,7 +389,8 @@ const TESTS = [
     "test accept key specs parse to modifier and keycode"
     "test invalid accept key specs are rejected"
     "test duplicate accept keys are dropped"
-    "test default accept keys are right and ctrl y"
+    "test default accept key is ctrl y"
+    "test right as accept key accepts"
     "test enter as accept key accepts instead of closing"
     "test right that is not an accept key closes the menu and moves"
     "test accept keys chain to reedline defaults of any key"
@@ -423,7 +432,8 @@ def run-test [name: string]: nothing -> any {
             "test accept key specs parse to modifier and keycode" => { test accept key specs parse to modifier and keycode }
             "test invalid accept key specs are rejected" => { test invalid accept key specs are rejected }
             "test duplicate accept keys are dropped" => { test duplicate accept keys are dropped }
-            "test default accept keys are right and ctrl y" => { test default accept keys are right and ctrl y }
+            "test default accept key is ctrl y" => { test default accept key is ctrl y }
+            "test right as accept key accepts" => { test right as accept key accepts }
             "test enter as accept key accepts instead of closing" => { test enter as accept key accepts instead of closing }
             "test right that is not an accept key closes the menu and moves" => { test right that is not an accept key closes the menu and moves }
             "test accept keys chain to reedline defaults of any key" => { test accept keys chain to reedline defaults of any key }

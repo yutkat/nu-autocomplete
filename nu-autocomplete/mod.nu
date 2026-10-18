@@ -31,7 +31,7 @@ def --env set-keybindings [bindings: list]: nothing -> nothing {
 # previous installation instead of adding duplicates.
 export def --env enable [
     --trigger: string = "all" # Keys that open the menu: 'all' (letters, digits, ASCII symbols, Space) or 'space'
-    --accept-keys: list<string> # Keys that accept the highlighted candidate (default: [right ctrl+y]); include 'enter' to make Enter accept
+    --accept-keys: list<string> # Keys that accept the highlighted candidate (default: [ctrl+y]); include 'enter' to make Enter accept
 ]: nothing -> nothing {
     let accept_keys = $accept_keys | default $DEFAULT_ACCEPT_KEYS
     if $trigger not-in [all space] {

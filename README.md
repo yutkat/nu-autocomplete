@@ -40,11 +40,11 @@ nu --config examples/minimal-config.nu
 ## Usage
 
 ```nu
-nu-autocomplete enable                         # letters, digits, ASCII symbols and Space open the menu
-nu-autocomplete enable --trigger space         # only Space opens the menu
-nu-autocomplete enable --accept-keys [ctrl+y]  # choose the keys that accept a candidate
-nu-autocomplete status                         # current state, accept keys, skipped keys
-nu-autocomplete disable                        # remove the keybindings and restore settings
+nu-autocomplete enable                               # letters, digits, ASCII symbols and Space open the menu
+nu-autocomplete enable --trigger space               # only Space opens the menu
+nu-autocomplete enable --accept-keys [right ctrl+y]  # choose the keys that accept a candidate
+nu-autocomplete status                               # current state, accept keys, skipped keys
+nu-autocomplete disable                              # remove the keybindings and restore settings
 ```
 
 Running `enable` again replaces the previous installation without duplicates.
@@ -58,11 +58,11 @@ changed them in the meantime.
 | ------------------------ | -------------------------------------------------------- | ------------------------ |
 | Letters, digits, symbols | insert and refilter                                      | insert and open the menu |
 | Tab / Shift+Tab          | next / previous candidate (a lone candidate is accepted) | your previous binding    |
-| **Right**, **Ctrl+Y**    | **accept the highlighted candidate**                     | your previous binding    |
+| **Ctrl+Y**               | **accept the highlighted candidate**                     | your previous binding    |
 | **Enter**                | **close the menu and run the line as typed**             | run the line             |
 | Esc                      | close the menu, keep the input                           | unchanged                |
 | Backspace                | delete and refilter; closes on an empty line             | unchanged                |
-| Left                     | close the menu and move left                             | unchanged                |
+| Left / Right             | close the menu and move left / right                     | unchanged                |
 | Up / Down                | move in the menu                                         | unchanged (history)      |
 
 After a candidate is accepted, the menu reopens for the completed line, so
@@ -75,23 +75,23 @@ binding whenever no menu is open.
 
 The IDE menu always highlights its first entry, and a keybinding cannot tell
 whether you moved the selection. If Enter accepted, `l` + Enter would turn into
-`last`. So Enter always runs what you typed; use Right or Ctrl+Y to accept.
+`last`. So Enter always runs what you typed; use Ctrl+Y to accept.
 This also applies to the Ctrl+R history menu.
 
 ### Accept keys
 
-`--accept-keys` replaces the default `[right ctrl+y]`:
+`--accept-keys` replaces the default `[ctrl+y]`:
 
 ```nu
-nu-autocomplete enable --accept-keys [right]   # Ctrl+Y keeps its usual job (paste)
-nu-autocomplete enable --accept-keys [enter]   # IDE-like Enter: press Esc first to run as typed
+nu-autocomplete enable --accept-keys [right ctrl+y]  # Right accepts too (instead of moving)
+nu-autocomplete enable --accept-keys [alt+l]         # Ctrl+Y keeps its usual job (paste)
+nu-autocomplete enable --accept-keys [enter]         # IDE-like Enter: press Esc first to run as typed
 ```
 
 Keys are written as `[modifier+]key` (`ctrl`, `alt`, `shift`, `super`; e.g.
 `ctrl+y`, `alt+l`, `f5`, `enter`). Keys the menu already uses (`tab`, `esc`,
 `left`, `up`, ...) and plain characters are rejected. An accept key only
-accepts while a menu is open; otherwise it keeps its previous behavior. If
-`right` is not in the list, Right closes the menu and moves the cursor.
+accepts while a menu is open; otherwise it keeps its previous behavior.
 
 ## Known issues
 
