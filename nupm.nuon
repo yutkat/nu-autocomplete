@@ -1,0 +1,7 @@
+{
+    name: nu-autocomplete
+    type: module
+    version: "0.1.0"
+    description: "IDE-style automatic completion menus for Nushell."
+    license: "LICENSE"
+}

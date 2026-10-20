@@ -9,8 +9,21 @@ export const NAME_PREFIX = "nu_autocomplete_"
 # Edit modes the bindings are installed in. Vi normal/visual are never touched.
 export const MODES = [emacs vi_insert]
 
-# The menu that is opened while typing.
+# Edit modes with an unselected state: typing opens `AUTO_MENU`, which hides
+# its highlight, and Tab, Shift+Tab, Ctrl+N or Ctrl+P switch to `MENU` and mark
+# the line, so Enter and the accept keys can tell an explicit selection from
+# the (hidden) first entry. Vi insert is left out: its Esc switches to normal
+# mode without consulting keybindings and would leave the mark behind as a
+# selection that normal-mode commands act on.
+export const MARK_MODES = [emacs]
+
+# The menu that shows a selected candidate (and, in Vi insert, the menu that
+# is opened while typing).
 export const MENU = "ide_completion_menu"
+
+# The menu that is opened while typing in a mark mode: a copy of `MENU` whose
+# selected entry looks like the others.
+export const AUTO_MENU = "nu_autocomplete_menu"
 
 # Keys that accept the highlighted candidate unless `enable --accept-keys` says otherwise.
 export const DEFAULT_ACCEPT_KEYS = [ctrl+y]
@@ -18,6 +31,9 @@ export const DEFAULT_ACCEPT_KEYS = [ctrl+y]
 # Keys that cannot be accept keys: nu-autocomplete binds them for another role
 # (Tab, Left) or the open menu needs them (Shift+Tab, Esc, Backspace, Up, Down).
 const RESERVED_KEYS = [tab backtab left esc backspace up down]
+
+# Ctrl+<key> combinations that move through the menu in a mark mode.
+const NAV_CTRL_KEYS = {n: menunext, p: menuprevious}
 
 # Named keys an accept key spec may use, besides single chars and f1..f35.
 const NAMED_KEYS = [enter right home end pageup pagedown delete insert space]
@@ -119,6 +135,9 @@ export def parse-key-spec [spec: string]: nothing -> record<modifier: string, ke
     let key = $m.0.key
     if $key in $RESERVED_KEYS and $modifier == none {
         do $fail $"($key) is used by nu-autocomplete or the menu for something else"
+    }
+    if $key in ($NAV_CTRL_KEYS | columns) and $modifier == control {
+        do $fail $"ctrl+($key) moves through the menu"
     }
     let keycode = if ($key | str length) == 1 {
         if $key =~ '^[a-z0-9]$' { $"char_($key)" } else { $"char_u($key | into binary | encode hex | str lowercase)" }
@@ -246,6 +265,15 @@ def previous-event [index: record, mode: string, modifier: string, keycode: stri
     if $found == null { reedline-default $mode $modifier $keycode } else { $found.event }
 }
 
+# The definition of `AUTO_MENU`, given the definition of `MENU`: the same menu
+# with its selected entry styled like the others, so nothing looks selected.
+export def auto-menu []: record -> record {
+    let menu = $in
+    let style = $menu.style? | default {}
+    let text = $style.text? | default default
+    $menu | upsert name $AUTO_MENU | upsert style ($style | upsert selected_text $text | upsert selected_match_text ($style.match_text? | default $text))
+}
+
 # Event for a trigger key: insert the char once, then open the menu.
 #
 # `menu` is a no-op (Inapplicable) while a menu is already open, so it never
@@ -255,6 +283,127 @@ def previous-event [index: record, mode: string, modifier: string, keycode: stri
 export def trigger-event [char: string]: nothing -> record {
     let insert = {edit: insertchar, value: $char}
     {until: [[$insert {send: menu, name: $MENU}] $insert]}
+}
+
+# Event that drops the selection mark. Moving right until NUL never finds the
+# char, so the cursor stays; the motion only collapses the selection, and is
+# therefore Handled exactly when the line was marked.
+export def unmark-event []: nothing -> record {
+    {edit: moverightuntil, value: (char nul)}
+}
+
+# Event that marks an unmarked line as "a candidate is selected" without
+# moving the cursor, so the completion (computed from the text before the
+# cursor) does not change: it selects the grapheme before the cursor, or the
+# one after it at the start of the line. Inapplicable on an empty line.
+export def mark-event []: nothing -> record {
+    {until: [
+        [{edit: moveleft, select: true} {edit: swapcursorandanchor}]
+        [{edit: moveright} {edit: moveleft, select: true}]
+    ]}
+}
+
+# Reedline has no "run B only if A was handled" (see docs/evaluation.md), so
+# the events below branch on the mark: `{until: [unmark X]}` runs X only on an
+# unmarked line and drops the mark otherwise. An event that must act only on
+# a line that was marked first sets the mark on the other branch, then tests
+# again.
+#
+# Every cursor edit made while a menu is open makes the menu refilter and
+# select its first entry, so a menu move is never followed by an edit.
+
+# Event for a trigger key in a mark mode: insert the char once and show the
+# unselected menu. On an unmarked line the char is inserted and the mark set
+# and dropped again (the open `AUTO_MENU` refilters); on a marked line the
+# mark is dropped and the selecting menu closed before the insert. Either way
+# `AUTO_MENU` then opens unless a menu is still open.
+export def mark-trigger-event [char: string]: nothing -> record {
+    let insert = {edit: insertchar, value: $char}
+    let unmark = unmark-event
+    {until: [
+        [
+            {until: [$unmark [$insert (mark-event)]]}
+            {until: [$unmark [{send: esc} $insert]]}
+            {send: menu, name: $AUTO_MENU}
+        ]
+        $insert
+    ]}
+}
+
+# Event for a key that moves through the menu in a mark mode (`nav` is
+# `menunext` or `menuprevious`). On a marked line `MENU` is open: the swap
+# keeps the mark (reversed), `menu` is Inapplicable, and the swap back runs
+# before the move. On an unmarked line the open menu (if any) is closed, the
+# line marked, and `MENU` opened on its first entry. A lone candidate that
+# the move accepts closes `MENU`, so `AUTO_MENU` opens for the completed line.
+# Opening `MENU` and moving back in the same event closes the menu again, so
+# Shift+Tab also starts on the first entry. In history-search mode the
+# `Multiple` is ignored and `previous` runs.
+export def nav-event [nav: record, previous: any]: nothing -> record {
+    let swap = {edit: swapcursorandanchor}
+    {until: [
+        [
+            {until: [$swap [{send: esc} (mark-event)]]}
+            {until: [{send: menu, name: $MENU} [$swap $nav]]}
+            {send: menu, name: $AUTO_MENU}
+        ]
+        $previous
+    ]}
+}
+
+# Event for Enter in a mark mode: on a marked line accept the selected
+# candidate and show the unselected menu for the completed line; otherwise
+# close the menu and do what Enter did before (normally: run the typed line).
+#
+# `menuaccept` drops the mark along with the replaced text. A marked line
+# with no menu runs `previous` too.
+export def enter-event [previous: any]: nothing -> record {
+    {until: [
+        [
+            {until: [(unmark-event) [{send: esc} $previous]]}
+            {until: [{send: menuaccept} $previous]}
+            {send: menu, name: $AUTO_MENU}
+        ]
+        $previous
+    ]}
+}
+
+# Event for an accept key in a mark mode: on a marked line accept the
+# selected candidate and show the unselected menu for the completed line;
+# otherwise do what the key did before.
+#
+# The first step flips the mark, so the accept runs only on a line that was
+# marked; it marks the line again, so the last step runs `previous` only on a
+# line that was not. The copy-until-NUL is an applied no-op edit: with
+# `persistent_menus` off it closes a menu left open on an empty line. It also
+# collapses a selection, so `--keep-selection` (for a `previous` that can
+# select) leaves it out.
+export def mark-accept-event [previous: any, --keep-selection]: nothing -> record {
+    let unmark = unmark-event
+    let steps = [
+        {until: [$unmark (mark-event)]}
+        {until: [$unmark [{send: menuaccept} {send: menu, name: $AUTO_MENU} (mark-event)]]}
+        {until: [$unmark $previous]}
+    ]
+    {until: [(if $keep_selection { $steps } else { $steps | append {edit: copyrightuntil, value: (char nul)} }) $previous]}
+}
+
+# Event for Backspace in a mark mode: on an unmarked line do what Backspace
+# did before (the open `AUTO_MENU` refilters); on a marked line close the
+# selecting menu first and show the unselected one. `previous` runs once:
+# the first step runs it only without a mark and marks the line afterwards,
+# the second only on a line that was marked. The copy-until-NUL closes a
+# menu left open on an empty line (see `mark-accept-event`).
+export def backspace-event [previous: any]: nothing -> record {
+    let unmark = unmark-event
+    {until: [
+        [
+            {until: [$unmark [$previous (mark-event)]]}
+            {until: [$unmark [{send: esc} $previous {send: menu, name: $AUTO_MENU}]]}
+            {edit: copyrightuntil, value: (char nul)}
+        ]
+        $previous
+    ]}
 }
 
 # Event for an accept key: accept the highlighted candidate and reopen the
@@ -282,10 +431,6 @@ export def accept-event [previous: any]: nothing -> record {
     ]}
 }
 
-# Keybindings that make the auto-opened menu usable. Each one only changes
-# behavior while a menu is open and otherwise falls back to the binding that
-# was in effect before (a user binding, or the Reedline/Nushell default).
-#
 # Whether an event can leave a selection, which the mark in `accept-event`
 # would collapse (e.g. Shift+Right's `moveright` with `select: true`).
 def can-select []: any -> bool {
@@ -300,33 +445,48 @@ def can-select []: any -> bool {
     }
 }
 
+# Keybindings that make the auto-opened menu usable. Each one only changes
+# behavior while a menu is open and otherwise falls back to the binding that
+# was in effect before (a user binding, or the Reedline/Nushell default).
+#
 # `index` is the key-index of the existing bindings in `mode`; `accept` lists
-# the parsed accept keys. Each accepts the highlighted candidate while a menu
-# has candidates and then reopens the menu, except
-# Enter (a reopened menu would make the next Enter accept again instead of
-# running the line) and keys whose previous event can select.
+# the parsed accept keys. In a mark mode (see `MARK_MODES`) see the `mark-*`
+# events above; Enter always accepts a selected candidate there, so `enter`
+# as an accept key changes nothing. Elsewhere each accept key accepts the
+# highlighted candidate while a menu has candidates and then reopens the
+# menu, except Enter (a reopened menu would make the next Enter accept again
+# instead of running the line) and keys whose previous event can select.
 def control-bindings [index: record, mode: string, accept: list]: nothing -> list<record> {
+    let mark = $mode in $MARK_MODES
     let enter = existing-event $index none enter {send: enter}
     let tab = existing-event $index none tab {send: none}
     let left = existing-event $index none left {send: left}
     let menu = {send: menu, name: $MENU}
+    # Closes the menu (dropping the mark in a mark mode), then runs `previous`.
+    let close = {|previous| if $mark { [{send: esc} (unmark-event) $previous] } else { [{send: esc} $previous] } }
+    let is_enter = {|k| (normalize-modifier $k.modifier) == none and (normalize-keycode $k.keycode) == enter }
     let is_accept = {|keycode| $accept | any {|k| (normalize-modifier $k.modifier) == none and (normalize-keycode $k.keycode) == $keycode } }
-    let accepts = $accept | each {|k|
+    let accepts = $accept | where {|k| not ($mark and (do $is_enter $k)) } | each {|k|
         let mod = normalize-modifier $k.modifier
         let id = if $mod == none { $k.keycode } else { $"($mod)_($k.keycode)" }
         let previous = previous-event $index $mode $k.modifier $k.keycode
-        let event = if ($mod == none and (normalize-keycode $k.keycode) == enter) or ($previous | can-select) {
+        let event = if $mark {
+            if ($previous | can-select) { mark-accept-event $previous --keep-selection } else { mark-accept-event $previous }
+        } else if (do $is_enter $k) or ($previous | can-select) {
             {until: [{send: menuaccept} $previous]}
         } else {
             accept-event $previous
         }
         {id: $id, modifier: $k.modifier, keycode: $k.keycode, event: $event}
     }
-    # Unless Enter is an accept key, Enter closes the menu without accepting
-    # the highlighted candidate and then does what Enter did before (normally:
-    # run the typed line). In history-search mode the `Multiple` is ignored
-    # and the bare event runs.
-    let enter_binding = if (do $is_accept enter) { [] } else {
+    # Enter closes the menu without accepting the highlighted candidate and
+    # then does what Enter did before (normally: run the typed line), unless
+    # it is an accept key (outside a mark mode) or a candidate was selected
+    # (in a mark mode). In history-search mode the `Multiple` is ignored and
+    # the bare event runs.
+    let enter_binding = if $mark {
+        [{id: enter, modifier: none, keycode: enter, event: (enter-event $enter)}]
+    } else if (do $is_accept enter) { [] } else {
         [{id: enter, modifier: none, keycode: enter, event: {until: [[{send: esc} $enter] $enter]}}]
     }
     # Unless Right is an accept key, Right closes the menu and does what it did
@@ -334,20 +494,44 @@ def control-bindings [index: record, mode: string, accept: list]: nothing -> lis
     # menu (`MenuRight`).
     let right_binding = if (do $is_accept right) { [] } else {
         let right = previous-event $index $mode none right
-        [{id: right, modifier: none, keycode: right, event: {until: [[{send: esc} $right] $right]}}]
+        [{id: right, modifier: none, keycode: right, event: {until: [(do $close $right) $right]}}]
     }
-    $enter_binding ++ $right_binding ++ [
-        # Tab moves to the next candidate while a menu is open, otherwise does
-        # what it did before (Nushell's default opens completion_menu). A lone
-        # candidate is accepted by `menunext`, which closes the menu; the
-        # trailing `menu` then reopens it for the completed line (e.g. a
-        # directory's contents). It is a no-op while any menu is still open,
-        # including one the previous Tab binding opened. In history-search
-        # mode the `Multiple` is ignored and the bare event runs.
-        {id: tab, modifier: none, keycode: tab, event: {until: [[{until: [{send: menunext} $tab]} $menu] $tab]}}
+    # In a mark mode Tab, Shift+Tab, Ctrl+N and Ctrl+P select candidates, Esc
+    # closes the menu and drops the mark, and Backspace shows the unselected
+    # menu again. Up and Down keep their previous bindings: with no menu open
+    # they walk the history, and the menu could only be told apart from no
+    # menu by an event with side effects (Esc is Handled either way, and any
+    # applied cursor edit ends Reedline's history traversal). They still move
+    # through an open menu and keep an existing mark.
+    let mark_bindings = if not $mark { [] } else {
+        let backtab = previous-event $index $mode shift backtab
+        let esc = previous-event $index $mode none esc
+        let backspace = previous-event $index $mode none backspace
+        let ctrl_nav = $NAV_CTRL_KEYS | items {|key, nav|
+            let previous = previous-event $index $mode control $"char_($key)"
+            {id: $"control_char_($key)", modifier: control, keycode: $"char_($key)", event: (nav-event {send: $nav} $previous)}
+        }
+        [
+            {id: tab, modifier: none, keycode: tab, event: (nav-event {send: menunext} $tab)}
+            {id: backtab, modifier: shift, keycode: backtab, event: (nav-event {send: menuprevious} $backtab)}
+            {id: esc, modifier: none, keycode: esc, event: {until: [[$esc (unmark-event)] $esc]}}
+            {id: backspace, modifier: none, keycode: backspace, event: (backspace-event $backspace)}
+        ] ++ $ctrl_nav
+    }
+    # Outside a mark mode Tab moves to the next candidate while a menu is
+    # open, otherwise does what it did before (Nushell's default opens
+    # completion_menu). A lone candidate is accepted by `menunext`, which
+    # closes the menu; the trailing `menu` then reopens it for the completed
+    # line (e.g. a directory's contents). It is a no-op while any menu is
+    # still open, including one the previous Tab binding opened. In
+    # history-search mode the `Multiple` is ignored and the bare event runs.
+    let tab_binding = if $mark { [] } else {
+        [{id: tab, modifier: none, keycode: tab, event: {until: [[{until: [{send: menunext} $tab]} $menu] $tab]}}]
+    }
+    $enter_binding ++ $right_binding ++ $mark_bindings ++ $tab_binding ++ [
         # Left closes the menu and moves the cursor (an open IDE menu otherwise
         # swallows Left).
-        {id: left, modifier: none, keycode: left, event: {until: [[{send: esc} $left] $left]}}
+        {id: left, modifier: none, keycode: left, event: {until: [(do $close $left) $left]}}
     ] ++ $accepts
 }
 
@@ -367,7 +551,7 @@ export def generate [trigger: string, existing: list, accept_keys: list<string> 
                 modifier: $t.key.modifier
                 keycode: $t.key.keycode
                 mode: $mode
-                event: (trigger-event $t.key.char)
+                event: (if $mode in $MARK_MODES { mark-trigger-event $t.key.char } else { trigger-event $t.key.char })
             }
         }
         let controls = control-bindings $index $mode $accept | each {|c|

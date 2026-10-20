@@ -78,6 +78,88 @@ def "test trigger event inserts once then opens the menu" [] {
     assert equal $event {until: [[$insert {send: menu, name: ide_completion_menu}] $insert]}
 }
 
+def "test mark trigger event inserts once and shows the unselected menu" [] {
+    let insert = {edit: insertchar, value: "x"}
+    let unmark = {edit: moverightuntil, value: (char nul)}
+    assert equal (unmark-event) $unmark
+    assert equal (mark-trigger-event "x") {until: [
+        [
+            {until: [$unmark [$insert (mark-event)]]}
+            {until: [$unmark [{send: esc} $insert]]}
+            {send: menu, name: nu_autocomplete_menu}
+        ]
+        $insert
+    ]}
+}
+
+def "test mark selects a grapheme next to the cursor in place" [] {
+    assert equal (mark-event) {until: [
+        [{edit: moveleft, select: true} {edit: swapcursorandanchor}]
+        [{edit: moveright} {edit: moveleft, select: true}]
+    ]}
+}
+
+def "test nav event switches to the selecting menu before moving" [] {
+    let prev = {send: none}
+    let swap = {edit: swapcursorandanchor}
+    assert equal (nav-event {send: menuprevious} $prev) {until: [
+        [
+            {until: [$swap [{send: esc} (mark-event)]]}
+            {until: [{send: menu, name: ide_completion_menu} [$swap {send: menuprevious}]]}
+            {send: menu, name: nu_autocomplete_menu}
+        ]
+        $prev
+    ]}
+}
+
+def "test enter event accepts only on a marked line" [] {
+    let prev = {send: enter}
+    assert equal (enter-event $prev) {until: [
+        [
+            {until: [(unmark-event) [{send: esc} $prev]]}
+            {until: [{send: menuaccept} $prev]}
+            {send: menu, name: nu_autocomplete_menu}
+        ]
+        $prev
+    ]}
+}
+
+def "test mark accept event accepts only on a marked line" [] {
+    let prev = {edit: pastecutbufferbefore}
+    let unmark = unmark-event
+    let steps = [
+        {until: [$unmark (mark-event)]}
+        {until: [$unmark [{send: menuaccept} {send: menu, name: nu_autocomplete_menu} (mark-event)]]}
+        {until: [$unmark $prev]}
+    ]
+    assert equal (mark-accept-event $prev) {until: [($steps | append {edit: copyrightuntil, value: (char nul)}) $prev]}
+    assert equal (mark-accept-event $prev --keep-selection) {until: [$steps $prev]}
+}
+
+def "test backspace event runs the previous backspace once" [] {
+    let prev = {edit: backspace}
+    let unmark = unmark-event
+    assert equal (backspace-event $prev) {until: [
+        [
+            {until: [$unmark [$prev (mark-event)]]}
+            {until: [$unmark [{send: esc} $prev {send: menu, name: nu_autocomplete_menu}]]}
+            {edit: copyrightuntil, value: (char nul)}
+        ]
+        $prev
+    ]}
+}
+
+def "test auto menu hides the selection" [] {
+    let menu = $env.config.menus | where name == ide_completion_menu | first
+    let auto = $menu | auto-menu
+    assert equal $auto.name nu_autocomplete_menu
+    assert equal $auto.style.selected_text $menu.style.text
+    assert equal $auto.style.selected_match_text $menu.style.match_text
+    assert equal ($auto | reject style name) ($menu | reject style name)
+    let bare = {name: ide_completion_menu, style: {}} | auto-menu
+    assert equal $bare.style {selected_text: default, selected_match_text: default}
+}
+
 def "test accept event reopens the menu only after an accept" [] {
     let prev = {send: right}
     let mark = {until: [{edit: moveright, select: true} {edit: moveleft, select: true}]}
@@ -97,15 +179,18 @@ def "test generated bindings are named, scoped to emacs and vi insert" [] {
     assert ($b | all {|kb| $kb | is-ours })
     assert equal ($b | get mode | uniq | sort) [emacs vi_insert]
     assert equal ($b | get name | uniq | length) ($b | length) "names are unique"
-    # 128 trigger keys + enter/right/tab/left/ctrl_y, per mode
-    assert equal ($b | length) (2 * (128 + 5))
+    # 128 trigger keys + enter/right/tab/left/ctrl_y per mode,
+    # + backtab/esc/backspace/ctrl_n/ctrl_p in emacs
+    assert equal ($b | length) (2 * (128 + 5) + 5)
     assert equal $gen.skipped []
 }
 
 def "test generated uppercase binding inserts the uppercase char" [] {
     let b = generate all [] | get bindings | kb-for emacs shift char_a
     assert equal ($b | length) 1
-    assert equal $b.0.event (trigger-event "A")
+    assert equal $b.0.event (mark-trigger-event "A")
+    let vi = generate all [] | get bindings | kb-for vi_insert shift char_a
+    assert equal $vi.0.event (trigger-event "A")
 }
 
 def "test trigger keys already bound by the user are skipped" [] {
@@ -120,24 +205,44 @@ def "test control keys chain to the existing binding" [] {
     let my_enter = {send: submitornewline}
     let user = [(user-binding my_enter none enter [emacs vi_insert] $my_enter)]
     let gen = generate all $user
-    let enter = $gen.bindings | kb-for emacs none enter
-    assert equal $enter.0.event {until: [[{send: esc} $my_enter] $my_enter]}
+    assert equal ($gen.bindings | kb-for emacs none enter | get 0.event) (enter-event $my_enter)
+    assert equal ($gen.bindings | kb-for vi_insert none enter | get 0.event) {until: [[{send: esc} $my_enter] $my_enter]}
     # Tab falls back to Nushell's default Tab binding when the menu is closed,
     # then reopens the IDE menu (after a lone candidate was accepted).
     let default_tab = $env.config.keybindings | where name == completion_menu | get 0.event
-    let tab = generate all $env.config.keybindings | get bindings | kb-for emacs none tab
+    let b = generate all $env.config.keybindings | get bindings
     let reopen = {send: menu, name: ide_completion_menu}
-    assert equal $tab.0.event {until: [[{until: [{send: menunext} $default_tab]} $reopen] $default_tab]}
+    assert equal ($b | kb-for emacs none tab | get 0.event) (nav-event {send: menunext} $default_tab)
+    assert equal ($b | kb-for vi_insert none tab | get 0.event) {until: [[{until: [{send: menunext} $default_tab]} $reopen] $default_tab]}
+    let default_backtab = $env.config.keybindings | where name == completion_previous | get 0.event
+    assert equal ($b | kb-for emacs shift backtab | get 0.event) (nav-event {send: menuprevious} $default_backtab)
+    assert equal ($b | kb-for vi_insert shift backtab | length) 0
 }
 
 def "test control keys fall back to reedline defaults" [] {
     let b = generate space [] | get bindings
-    assert equal ($b | kb-for emacs none enter | get 0.event) {until: [[{send: esc} {send: enter}] {send: enter}]}
-    assert equal ($b | kb-for emacs none tab | get 0.event) {until: [[{until: [{send: menunext} {send: none}]} {send: menu, name: ide_completion_menu}] {send: none}]}
+    let unmark = unmark-event
+    assert equal ($b | kb-for emacs none enter | get 0.event) (enter-event {send: enter})
+    assert equal ($b | kb-for vi_insert none enter | get 0.event) {until: [[{send: esc} {send: enter}] {send: enter}]}
+    assert equal ($b | kb-for emacs none tab | get 0.event) (nav-event {send: menunext} {send: none})
+    assert equal ($b | kb-for vi_insert none tab | get 0.event) {until: [[{until: [{send: menunext} {send: none}]} {send: menu, name: ide_completion_menu}] {send: none}]}
+    assert equal ($b | kb-for emacs shift backtab | get 0.event) (nav-event {send: menuprevious} {send: none})
+    assert equal ($b | kb-for emacs none esc | get 0.event) {until: [[{send: esc} $unmark] {send: esc}]}
     let right = {until: [{send: historyhintcomplete} {send: right}]}
-    assert equal ($b | kb-for emacs none right | get 0.event) {until: [[{send: esc} $right] $right]}
-    assert equal ($b | kb-for emacs none left | get 0.event) {until: [[{send: esc} {send: left}] {send: left}]}
-    assert equal ($b | kb-for emacs control char_y | get 0.event) (accept-event {edit: pastecutbufferbefore})
+    assert equal ($b | kb-for emacs none right | get 0.event) {until: [[{send: esc} $unmark $right] $right]}
+    assert equal ($b | kb-for vi_insert none right | get 0.event) {until: [[{send: esc} $right] $right]}
+    assert equal ($b | kb-for emacs none left | get 0.event) {until: [[{send: esc} $unmark {send: left}] {send: left}]}
+    assert equal ($b | kb-for vi_insert none left | get 0.event) {until: [[{send: esc} {send: left}] {send: left}]}
+    let down = {until: [{send: menudown} {send: down}]}
+    assert equal ($b | kb-for emacs control char_n | get 0.event) (nav-event {send: menunext} $down)
+    let up = {until: [{send: menuup} {send: up}]}
+    assert equal ($b | kb-for emacs control char_p | get 0.event) (nav-event {send: menuprevious} $up)
+    assert equal ($b | kb-for vi_insert control char_n | length) 0
+    assert equal ($b | kb-for emacs none backspace | get 0.event) (backspace-event {edit: backspace})
+    assert equal ($b | kb-for vi_insert none backspace | length) 0
+    # Up and Down keep their previous bindings (history walking with no menu).
+    assert equal ($b | where keycode in [up down] | length) 0
+    assert equal ($b | kb-for emacs control char_y | get 0.event) (mark-accept-event {edit: pastecutbufferbefore})
     assert equal ($b | kb-for vi_insert control char_y | get 0.event) (accept-event {send: none})
 }
 
@@ -165,7 +270,7 @@ def "test ctrl y chains to the existing binding" [] {
     let user = [(user-binding my_y Control char_Y vi_insert $my_y)]
     let b = generate space $user | get bindings
     assert equal ($b | kb-for vi_insert control char_y | get 0.event) (accept-event $my_y)
-    assert equal ($b | kb-for emacs control char_y | get 0.event) (accept-event {edit: pastecutbufferbefore})
+    assert equal ($b | kb-for emacs control char_y | get 0.event) (mark-accept-event {edit: pastecutbufferbefore})
 }
 
 def "test accept key specs parse to modifier and keycode" [] {
@@ -182,7 +287,7 @@ def "test accept key specs parse to modifier and keycode" [] {
 }
 
 def "test invalid accept key specs are rejected" [] {
-    for spec in [tab backtab esc backspace left up down a A shift+a "1" "/" space shift+space ctrl+alt+x hyper+x ctrl+foo f36 ""] {
+    for spec in [tab backtab esc backspace left up down ctrl+n ctrl+p a A shift+a "1" "/" space shift+space ctrl+alt+x hyper+x ctrl+foo f36 ""] {
         let msg = try { parse-key-spec $spec; null } catch {|e| $e.msg }
         assert ($msg != null) $"accepted invalid spec '($spec)'"
         assert ($msg | str starts-with "invalid accept key") $msg
@@ -196,55 +301,64 @@ def "test duplicate accept keys are dropped" [] {
 def "test default accept key is ctrl y" [] {
     assert equal $DEFAULT_ACCEPT_KEYS [ctrl+y]
     let b = generate space [] | get bindings
-    assert equal ($b | kb-for emacs control char_y | get 0.event) (accept-event {edit: pastecutbufferbefore})
+    assert equal ($b | kb-for emacs control char_y | get 0.event) (mark-accept-event {edit: pastecutbufferbefore})
+    assert equal ($b | kb-for vi_insert control char_y | get 0.event) (accept-event {send: none})
     assert equal ($b | kb-for emacs none right | length) 1
 }
 
 def "test right as accept key accepts" [] {
     let b = generate space [] [right ctrl+y] | get bindings
     let right = {until: [{send: historyhintcomplete} {send: right}]}
-    assert equal ($b | kb-for emacs none right | get 0.event) (accept-event $right)
+    assert equal ($b | kb-for emacs none right | get 0.event) (mark-accept-event $right)
+    assert equal ($b | kb-for vi_insert none right | get 0.event) (accept-event $right)
     assert equal ($b | kb-for emacs none right | length) 1
-    assert equal ($b | kb-for emacs control char_y | get 0.event) (accept-event {edit: pastecutbufferbefore})
+    assert equal ($b | kb-for emacs control char_y | get 0.event) (mark-accept-event {edit: pastecutbufferbefore})
 }
 
-def "test enter as accept key accepts instead of closing" [] {
+def "test enter as accept key accepts instead of closing in vi insert" [] {
     let b = generate space [] [enter] | get bindings
-    assert equal ($b | kb-for emacs none enter | get 0.event) {until: [{send: menuaccept} {send: enter}]}
+    # Emacs Enter already accepts a selected candidate.
+    assert equal ($b | kb-for emacs none enter | get 0.event) (enter-event {send: enter})
+    assert equal ($b | kb-for emacs none enter | length) 1
     # Vi insert has no Enter entry in Reedline's table but submits on Enter.
     assert equal ($b | kb-for vi_insert none enter | get 0.event) {until: [{send: menuaccept} {send: enter}]}
     assert equal ($b | kb-for emacs control char_y | length) 0
-    # space trigger (2) + tab, left, right, enter
-    assert equal ($b | where mode == emacs | length) 6
+    # space trigger (2) + tab, left, right, enter,
+    # + backtab, esc, backspace, ctrl_n, ctrl_p in emacs
+    assert equal ($b | where mode == emacs | length) 11
+    assert equal ($b | where mode == vi_insert | length) 6
 }
 
 def "test right that is not an accept key closes the menu and moves" [] {
     let b = generate space [] [ctrl+y] | get bindings
     let right = {until: [{send: historyhintcomplete} {send: right}]}
-    assert equal ($b | kb-for emacs none right | get 0.event) {until: [[{send: esc} $right] $right]}
-    assert equal ($b | kb-for emacs none enter | get 0.event) {until: [[{send: esc} {send: enter}] {send: enter}]}
+    assert equal ($b | kb-for emacs none right | get 0.event) {until: [[{send: esc} (unmark-event) $right] $right]}
+    assert equal ($b | kb-for emacs none enter | get 0.event) (enter-event {send: enter})
     let my_right = {send: right}
     let user = [(user-binding my_right none right emacs $my_right)]
     let b = generate space $user [ctrl+y] | get bindings
-    assert equal ($b | kb-for emacs none right | get 0.event) {until: [[{send: esc} $my_right] $my_right]}
+    assert equal ($b | kb-for emacs none right | get 0.event) {until: [[{send: esc} (unmark-event) $my_right] $my_right]}
 }
 
 def "test accept keys chain to reedline defaults of any key" [] {
     let b = generate space [] [alt+enter ctrl+right f5] | get bindings
-    assert equal ($b | kb-for emacs alt enter | get 0.event) (accept-event {edit: insertnewline})
+    assert equal ($b | kb-for emacs alt enter | get 0.event) (mark-accept-event {edit: insertnewline})
+    assert equal ($b | kb-for vi_insert alt enter | get 0.event) (accept-event {edit: insertnewline})
     let word = {until: [{send: historyhintwordcomplete} {edit: movewordright, select: false}]}
-    assert equal ($b | kb-for emacs control right | get 0.event) (accept-event $word)
+    assert equal ($b | kb-for emacs control right | get 0.event) (mark-accept-event $word)
     assert equal ($b | kb-for vi_insert none f5 | get 0.event) (accept-event {send: none})
 }
 
 def "test accept keys that select do not reopen the menu" [] {
     let b = generate space [] [shift+right] | get bindings
+    let select = {edit: moveright, select: true}
     assert equal ($b | kb-for emacs control_shift right | length) 0
-    assert equal ($b | kb-for emacs shift right | get 0.event) {until: [{send: menuaccept} {edit: moveright, select: true}]}
+    assert equal ($b | kb-for emacs shift right | get 0.event) (mark-accept-event $select --keep-selection)
+    assert equal ($b | kb-for vi_insert shift right | get 0.event) {until: [{send: menuaccept} $select]}
     let my_y = [{edit: movewordleft, select: true} {send: repaint}]
-    let user = [(user-binding my_y control char_y emacs {until: $my_y})]
+    let user = [(user-binding my_y control char_y vi_insert {until: $my_y})]
     let b = generate space $user | get bindings
-    assert equal ($b | kb-for emacs control char_y | get 0.event) {until: [{send: menuaccept} {until: $my_y}]}
+    assert equal ($b | kb-for vi_insert control char_y | get 0.event) {until: [{send: menuaccept} {until: $my_y}]}
 }
 
 def "test vi normal mode is never bound" [] {
@@ -264,12 +378,14 @@ def --env "test enable installs bindings and completion settings" [] {
     $env.config.completions.quick = true
     $env.config.completions.partial = true
     nu-autocomplete enable
-    assert equal ($env.config.keybindings | ours | length) 266
+    assert equal ($env.config.keybindings | ours | length) 271
     assert equal ($env.config.completions | select quick partial persistent_menus) {quick: false, partial: false, persistent_menus: false}
     let st = nu-autocomplete status
     assert equal $st.enabled true
     assert equal $st.trigger all
-    assert equal $st.keybindings_by_mode {emacs: 133, vi_insert: 133}
+    assert equal $st.keybindings_by_mode {emacs: 138, vi_insert: 133}
+    let menu = $env.config.menus | where name == ide_completion_menu | first
+    assert equal ($env.config.menus | where name == nu_autocomplete_menu) [($menu | auto-menu)]
 }
 
 def --env "test enable is idempotent" [] {
@@ -283,20 +399,20 @@ def --env "test enable is idempotent" [] {
 def --env "test enable with another trigger set replaces bindings" [] {
     nu-autocomplete enable
     nu-autocomplete enable --trigger space
-    assert equal ($env.config.keybindings | ours | length) 14
+    assert equal ($env.config.keybindings | ours | length) 19
     assert equal (nu-autocomplete status | get trigger) space
 }
 
 def --env "test enable with other accept keys replaces bindings" [] {
     nu-autocomplete enable --accept-keys [enter]
     assert equal (nu-autocomplete status | get accept_keys) [enter]
-    assert equal (nu-autocomplete status | get keybindings_by_mode) {emacs: 132, vi_insert: 132}
-    assert equal ($env.config.keybindings | ours | kb-for emacs none enter | get 0.event) {until: [{send: menuaccept} {send: enter}]}
+    assert equal (nu-autocomplete status | get keybindings_by_mode) {emacs: 137, vi_insert: 132}
+    assert equal ($env.config.keybindings | ours | kb-for vi_insert none enter | get 0.event) {until: [{send: menuaccept} {send: enter}]}
     nu-autocomplete enable
     assert equal (nu-autocomplete status | get accept_keys) [ctrl+y]
-    assert equal ($env.config.keybindings | ours | length) 266
-    assert equal ($env.config.keybindings | ours | get name | uniq | length) 266
-    assert equal ($env.config.keybindings | ours | kb-for emacs none enter | get 0.event) {until: [[{send: esc} {send: enter}] {send: enter}]}
+    assert equal ($env.config.keybindings | ours | length) 271
+    assert equal ($env.config.keybindings | ours | get name | uniq | length) 271
+    assert equal ($env.config.keybindings | ours | kb-for emacs none enter | get 0.event) (enter-event {send: enter})
 }
 
 def --env "test enable rejects an invalid accept key without changes" [] {
@@ -330,12 +446,16 @@ def --env "test disable restores keybindings and settings" [] {
     $env.config.completions.persistent_menus = true
     let before_kb = $env.config.keybindings
     let before_comp = $env.config.completions
+    let before_color = $env.config.color_config
     nu-autocomplete enable
     nu-autocomplete enable
     nu-autocomplete disable
     assert equal $env.config.keybindings $before_kb
     assert equal $env.config.completions $before_comp
+    assert equal $env.config.color_config $before_color
     assert equal (nu-autocomplete status | get enabled) false
+    # Menus cannot be removed; the unused auto menu stays defined.
+    assert equal ($env.config.menus | where name == nu_autocomplete_menu | length) 1
 }
 
 def --env "test disable keeps settings the user changed after enable" [] {
@@ -349,6 +469,31 @@ def --env "test disable keeps settings the user changed after enable" [] {
     assert equal $env.config.completions.quick true "restored: still had our value"
     assert equal $env.config.completions.partial true "kept: user changed it"
     assert equal $env.config.completions.case_sensitive true "unrelated setting untouched"
+}
+
+def --env "test enable hides the selection and disable restores it" [] {
+    $env.config.color_config.selection = "reverse"
+    nu-autocomplete enable
+    assert equal $env.config.color_config.selection {attr: n}
+    assert equal (nu-autocomplete status | get selection_style) {attr: n}
+    nu-autocomplete enable
+    nu-autocomplete disable
+    assert equal $env.config.color_config.selection "reverse"
+}
+
+def --env "test disable unsets a selection style that was unset" [] {
+    $env.config.color_config = ($env.config.color_config | reject --optional selection)
+    let before = $env.config.color_config
+    nu-autocomplete enable
+    nu-autocomplete disable
+    assert equal $env.config.color_config $before
+}
+
+def --env "test disable keeps a selection style the user set after enable" [] {
+    nu-autocomplete enable
+    $env.config.color_config.selection = {attr: u}
+    nu-autocomplete disable
+    assert equal $env.config.color_config.selection {attr: u}
 }
 
 def --env "test disable keeps keybindings the user added after enable" [] {
@@ -377,6 +522,13 @@ const TESTS = [
     "test unknown trigger set is rejected"
     "test keycode normalization"
     "test trigger event inserts once then opens the menu"
+    "test mark trigger event inserts once and shows the unselected menu"
+    "test mark selects a grapheme next to the cursor in place"
+    "test nav event switches to the selecting menu before moving"
+    "test enter event accepts only on a marked line"
+    "test mark accept event accepts only on a marked line"
+    "test backspace event runs the previous backspace once"
+    "test auto menu hides the selection"
     "test accept event reopens the menu only after an accept"
     "test generated bindings are named, scoped to emacs and vi insert"
     "test generated uppercase binding inserts the uppercase char"
@@ -391,7 +543,7 @@ const TESTS = [
     "test duplicate accept keys are dropped"
     "test default accept key is ctrl y"
     "test right as accept key accepts"
-    "test enter as accept key accepts instead of closing"
+    "test enter as accept key accepts instead of closing in vi insert"
     "test right that is not an accept key closes the menu and moves"
     "test accept keys chain to reedline defaults of any key"
     "test accept keys that select do not reopen the menu"
@@ -406,6 +558,9 @@ const TESTS = [
     "test enable rejects an unknown trigger set"
     "test disable restores keybindings and settings"
     "test disable keeps settings the user changed after enable"
+    "test enable hides the selection and disable restores it"
+    "test disable unsets a selection style that was unset"
+    "test disable keeps a selection style the user set after enable"
     "test disable keeps keybindings the user added after enable"
     "test disable without enable is a no-op"
 ]
@@ -420,6 +575,13 @@ def run-test [name: string]: nothing -> any {
             "test unknown trigger set is rejected" => { test unknown trigger set is rejected }
             "test keycode normalization" => { test keycode normalization }
             "test trigger event inserts once then opens the menu" => { test trigger event inserts once then opens the menu }
+            "test mark trigger event inserts once and shows the unselected menu" => { test mark trigger event inserts once and shows the unselected menu }
+            "test mark selects a grapheme next to the cursor in place" => { test mark selects a grapheme next to the cursor in place }
+            "test nav event switches to the selecting menu before moving" => { test nav event switches to the selecting menu before moving }
+            "test enter event accepts only on a marked line" => { test enter event accepts only on a marked line }
+            "test mark accept event accepts only on a marked line" => { test mark accept event accepts only on a marked line }
+            "test backspace event runs the previous backspace once" => { test backspace event runs the previous backspace once }
+            "test auto menu hides the selection" => { test auto menu hides the selection }
             "test accept event reopens the menu only after an accept" => { test accept event reopens the menu only after an accept }
             "test generated bindings are named, scoped to emacs and vi insert" => { test generated bindings are named, scoped to emacs and vi insert }
             "test generated uppercase binding inserts the uppercase char" => { test generated uppercase binding inserts the uppercase char }
@@ -434,7 +596,7 @@ def run-test [name: string]: nothing -> any {
             "test duplicate accept keys are dropped" => { test duplicate accept keys are dropped }
             "test default accept key is ctrl y" => { test default accept key is ctrl y }
             "test right as accept key accepts" => { test right as accept key accepts }
-            "test enter as accept key accepts instead of closing" => { test enter as accept key accepts instead of closing }
+            "test enter as accept key accepts instead of closing in vi insert" => { test enter as accept key accepts instead of closing in vi insert }
             "test right that is not an accept key closes the menu and moves" => { test right that is not an accept key closes the menu and moves }
             "test accept keys chain to reedline defaults of any key" => { test accept keys chain to reedline defaults of any key }
             "test accept keys that select do not reopen the menu" => { test accept keys that select do not reopen the menu }
@@ -449,6 +611,9 @@ def run-test [name: string]: nothing -> any {
             "test enable rejects an unknown trigger set" => { test enable rejects an unknown trigger set }
             "test disable restores keybindings and settings" => { test disable restores keybindings and settings }
             "test disable keeps settings the user changed after enable" => { test disable keeps settings the user changed after enable }
+            "test enable hides the selection and disable restores it" => { test enable hides the selection and disable restores it }
+            "test disable unsets a selection style that was unset" => { test disable unsets a selection style that was unset }
+            "test disable keeps a selection style the user set after enable" => { test disable keeps a selection style the user set after enable }
             "test disable keeps keybindings the user added after enable" => { test disable keeps keybindings the user added after enable }
             "test disable without enable is a no-op" => { test disable without enable is a no-op }
             _ => (error make {msg: $"no such test: ($name)"})

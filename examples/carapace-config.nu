@@ -1,7 +1,7 @@
 # Optional Carapace integration for nu-autocomplete.
 #
 # Try it without touching your config:
-#   nu --config examples/carapace-config.nu
+#   XDG_CONFIG_HOME=$(mktemp -d) nu --config examples/carapace-config.nu
 # Or copy the parts you need into your own config.nu.
 #
 # Requires the `carapace` binary on PATH (https://carapace.sh). Without it this
