@@ -171,7 +171,24 @@ only accepts a selected candidate; otherwise it keeps its previous behavior.
   friends on an empty line show the command list but cannot select in it
   (there is nothing to mark); type a character first.
 - In the Ctrl+R history menu, Enter runs the current line instead of picking
-  the entry, and Tab switches to the completion menu.
+  the entry, and Tab switches to the completion menu. Right picks the entry.
+  To keep Enter, bind Ctrl+R to a history picker instead of the menu; Enter
+  then inserts the chosen line without running it (this reads a plaintext
+  history file):
+
+  ```nu
+  $env.config.keybindings ++= [{
+      name: history_pick
+      modifier: control
+      keycode: char_r
+      mode: [emacs vi_insert]
+      event: {
+          send: executehostcommand
+          cmd: "commandline edit --replace (open $nu.history-path | lines | reverse | uniq | input list --fuzzy)"
+      }
+  }]
+  ```
+
 - While a slow completer runs, the previous candidates stay visible until the
   new ones arrive (they cannot be accepted).
 - In Emacs mode, while a candidate is selected, keys that nu-autocomplete does
