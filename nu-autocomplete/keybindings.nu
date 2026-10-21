@@ -315,15 +315,16 @@ export def mark-event []: nothing -> record {
 # Event for a trigger key in a mark mode: insert the char once and show the
 # unselected menu. On an unmarked line the char is inserted and the mark set
 # and dropped again (the open `AUTO_MENU` refilters); on a marked line the
-# mark is dropped and the selecting menu closed before the insert. Either way
-# `AUTO_MENU` then opens unless a menu is still open.
+# mark is dropped and the selected candidate accepted (or, with no menu open,
+# nothing done) before the insert. Either way `AUTO_MENU` then opens unless a
+# menu is still open.
 export def mark-trigger-event [char: string]: nothing -> record {
     let insert = {edit: insertchar, value: $char}
     let unmark = unmark-event
     {until: [
         [
             {until: [$unmark [$insert (mark-event)]]}
-            {until: [$unmark [{send: esc} $insert]]}
+            {until: [$unmark [{until: [{send: menuaccept} {send: esc}]} $insert]]}
             {send: menu, name: $AUTO_MENU}
         ]
         $insert

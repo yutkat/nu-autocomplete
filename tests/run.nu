@@ -78,14 +78,14 @@ def "test trigger event inserts once then opens the menu" [] {
     assert equal $event {until: [[$insert {send: menu, name: ide_completion_menu}] $insert]}
 }
 
-def "test mark trigger event inserts once and shows the unselected menu" [] {
+def "test mark trigger event accepts the selection then inserts once" [] {
     let insert = {edit: insertchar, value: "x"}
     let unmark = {edit: moverightuntil, value: (char nul)}
     assert equal (unmark-event) $unmark
     assert equal (mark-trigger-event "x") {until: [
         [
             {until: [$unmark [$insert (mark-event)]]}
-            {until: [$unmark [{send: esc} $insert]]}
+            {until: [$unmark [{until: [{send: menuaccept} {send: esc}]} $insert]]}
             {send: menu, name: nu_autocomplete_menu}
         ]
         $insert
@@ -522,7 +522,7 @@ const TESTS = [
     "test unknown trigger set is rejected"
     "test keycode normalization"
     "test trigger event inserts once then opens the menu"
-    "test mark trigger event inserts once and shows the unselected menu"
+    "test mark trigger event accepts the selection then inserts once"
     "test mark selects a grapheme next to the cursor in place"
     "test nav event switches to the selecting menu before moving"
     "test enter event accepts only on a marked line"
@@ -575,7 +575,7 @@ def run-test [name: string]: nothing -> any {
             "test unknown trigger set is rejected" => { test unknown trigger set is rejected }
             "test keycode normalization" => { test keycode normalization }
             "test trigger event inserts once then opens the menu" => { test trigger event inserts once then opens the menu }
-            "test mark trigger event inserts once and shows the unselected menu" => { test mark trigger event inserts once and shows the unselected menu }
+            "test mark trigger event accepts the selection then inserts once" => { test mark trigger event accepts the selection then inserts once }
             "test mark selects a grapheme next to the cursor in place" => { test mark selects a grapheme next to the cursor in place }
             "test nav event switches to the selecting menu before moving" => { test nav event switches to the selecting menu before moving }
             "test enter event accepts only on a marked line" => { test enter event accepts only on a marked line }

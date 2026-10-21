@@ -76,7 +76,8 @@ Running `enable` again replaces the previous installation without duplicates.
 
 | Key                | Menu open, nothing selected                  | Candidate selected                                 | Menu closed                          |
 | ------------------ | -------------------------------------------- | -------------------------------------------------- | ------------------------------------ |
-| Typing / Backspace | edit and refilter                            | edit; back to nothing selected                     | typing opens the menu                |
+| Typing             | edit and refilter                            | accept the candidate, then type; nothing selected  | typing opens the menu                |
+| Backspace          | edit and refilter                            | edit; back to nothing selected                     | your previous binding                |
 | Tab / Ctrl+N       | select the first candidate                   | select the next one (a lone candidate is accepted) | open the menu on the first candidate |
 | Shift+Tab / Ctrl+P | select the first candidate                   | select the previous one                            | open the menu on the first candidate |
 | **Enter**          | **close the menu and run the line as typed** | **accept the candidate**                           | run the line                         |
@@ -191,6 +192,11 @@ only accepts a selected candidate; otherwise it keeps its previous behavior.
 
 - While a slow completer runs, the previous candidates stay visible until the
   new ones arrive (they cannot be accepted).
+- Typing while a candidate is selected accepts it as Nushell completes it,
+  so a candidate that already ends in a space or `/` gets a second one when
+  that char is typed: `le` Tab Space gives `length  `, and `ls fo` Tab `/`
+  gives `ls foo//`. Type the next word directly instead (`le` Tab `x` gives
+  `length x`).
 - In Emacs mode, while a candidate is selected, keys that nu-autocomplete does
   not bind act on the editor selection (for example Delete or a cut binding of
   yours acts on the marked character), and keys that only move the cursor
