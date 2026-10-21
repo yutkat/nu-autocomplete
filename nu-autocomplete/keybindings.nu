@@ -191,6 +191,10 @@ def event-from-debug [debug: string]: nothing -> any {
 
 # Split on commas that are not nested in brackets or braces.
 def split-top-level [text: string]: nothing -> list<string> {
+    # Fast path: without brackets every comma is at the top level.
+    if $text !~ '[()\[\]{}]' {
+        return ($text | split row "," | str trim | where $it != "")
+    }
     let acc = $text | split chars | reduce --fold {depth: 0, cur: "", out: []} {|c, acc|
         if $c == "," and $acc.depth == 0 {
             $acc | update out { append ($acc.cur | str trim) } | update cur ""
@@ -202,29 +206,49 @@ def split-top-level [text: string]: nothing -> list<string> {
     $acc.out | append ($acc.cur | str trim) | where $it != ""
 }
 
-# The event Reedline itself binds to a key in a mode (`{send: none}` when it
+# Reedline's default bindings in a mode for the given keycodes, grouped by
+# key-id. Build it once per mode: running `keybindings default` and
+# normalizing its entries for each looked-up key dominated enable's time.
+def default-index [mode: string, keycodes: list<string>]: nothing -> record {
+    let keys = $keycodes | each {|k| normalize-keycode $k } | uniq
+    # Normalize with column-wise string ops and keep the matching keycodes
+    # (and the forms normalize-keycode rewrites), so the custom commands only
+    # run on the few remaining entries.
+    let entries = keybindings default | where mode == $mode
+    | str replace --regex "^Char\\('(.*)'\\)$" 'char_$1' code | str replace --regex '^F\((\d+)\)$' 'f$1' code | str lowercase code
+    | where code in $keys or code starts-with "char_u" or code == "space"
+    | str replace --regex '^KeyModifiers\((.*)\)$' '$1' modifier | str replace "0x0" none modifier | str replace --all " | " "_" modifier | str lowercase modifier
+    | update code {|kb| normalize-keycode $kb.code }
+    | where code in $keys
+    # A single lowercase modifier is already normalized; only sets need sorting.
+    | group-by {|kb| $"(if ($kb.modifier | str contains "_") { normalize-modifier $kb.modifier } else { $kb.modifier }) ($kb.code)" }
+    {mode: $mode, keycodes: $keys, entries: $entries}
+}
+
+# The event Reedline binds to a key in a default-index (`{send: none}` when it
 # binds nothing). Vi insert has no Enter entry but submits on an unbound Enter.
-export def reedline-default [mode: string, modifier: string, keycode: string]: nothing -> any {
+def default-event [defaults: record, modifier: string, keycode: string]: nothing -> any {
     let mod = normalize-modifier $modifier
     let key = normalize-keycode $keycode
-    # Match the keycode first with column-wise string ops (keeping the forms
-    # normalize-keycode rewrites), so the custom commands only run on the few
-    # remaining entries.
-    let found = keybindings default | where mode == $mode
-    | str replace --regex "^Char\\('(.*)'\\)$" 'char_$1' code | str replace --regex '^F\((\d+)\)$' 'f$1' code | str lowercase code
-    | where code == $key or code starts-with "char_u" or code == "space"
-    | where {|kb|
-        let m = $kb.modifier | str replace --regex '^KeyModifiers\((.*)\)$' '$1' | str replace "0x0" none | str replace --all " | " "_"
-        (normalize-modifier $m) == $mod and (normalize-keycode $kb.code) == $key
+    # A key missing from the index would silently get `{send: none}`.
+    if $key not-in $defaults.keycodes {
+        error make {msg: $"Reedline's defaults for ($keycode) were not loaded"}
     }
-    if ($found | is-empty) {
+    let found = $defaults.entries | get --optional $"($mod) ($key)"
+    if $found == null {
         return (if $mod == none and $key == enter { {send: enter} } else { {send: none} })
     }
     let event = event-from-debug $found.0.event
     if $event == null {
-        error make {msg: $"cannot reproduce Reedline's default for ($modifier) ($keycode) in ($mode) \(($found.0.event)\); bind the key yourself before enable or choose another accept key"}
+        error make {msg: $"cannot reproduce Reedline's default for ($modifier) ($keycode) in ($defaults.mode) \(($found.0.event)\); bind the key yourself before enable or choose another accept key"}
     }
     $event
+}
+
+# The event Reedline itself binds to a key in a mode (`{send: none}` when it
+# binds nothing).
+export def reedline-default [mode: string, modifier: string, keycode: string]: nothing -> any {
+    default-event (default-index $mode [$keycode]) $modifier $keycode
 }
 
 # Normalized `<modifier> <keycode>` lookup key.
@@ -259,10 +283,11 @@ def existing-event [index: record, modifier: string, keycode: string, fallback: 
     if $found == null { $fallback } else { $found.event }
 }
 
-# The event the existing binding sends, or the Reedline default for the key.
-def previous-event [index: record, mode: string, modifier: string, keycode: string]: nothing -> any {
+# The event the existing binding sends, or the Reedline default for the key
+# (from a default-index).
+def previous-event [index: record, defaults: record, modifier: string, keycode: string]: nothing -> any {
     let found = $index | lookup $modifier $keycode
-    if $found == null { reedline-default $mode $modifier $keycode } else { $found.event }
+    if $found == null { default-event $defaults $modifier $keycode } else { $found.event }
 }
 
 # The definition of `AUTO_MENU`, given the definition of `MENU`: the same menu
@@ -465,15 +490,17 @@ def control-bindings [index: record, mode: string, accept: list]: nothing -> lis
     let menu = {send: menu, name: $MENU}
     # Closes the menu (dropping the mark in a mark mode), then runs `previous`.
     let close = {|previous| if $mark { [{send: esc} (unmark-event) $previous] } else { [{send: esc} $previous] } }
-    let is_enter = {|k| (normalize-modifier $k.modifier) == none and (normalize-keycode $k.keycode) == enter }
-    let is_accept = {|keycode| $accept | any {|k| (normalize-modifier $k.modifier) == none and (normalize-keycode $k.keycode) == $keycode } }
-    let accepts = $accept | where {|k| not ($mark and (do $is_enter $k)) } | each {|k|
-        let mod = normalize-modifier $k.modifier
-        let id = if $mod == none { $k.keycode } else { $"($mod)_($k.keycode)" }
-        let previous = previous-event $index $mode $k.modifier $k.keycode
+    # Normalize the accept keys once (`accept` may be empty, so no column access).
+    let accept = $accept | each {|k| $k | insert mod (normalize-modifier $k.modifier) | insert key (normalize-keycode $k.keycode) }
+    let unmodified = $accept | where mod == none | each {|k| $k.key }
+    # Reedline's defaults for every key whose previous event may be needed.
+    let defaults = default-index $mode (($accept | each {|k| $k.keycode }) ++ [right backtab esc backspace] ++ ($NAV_CTRL_KEYS | columns | each {|key| $"char_($key)" }))
+    let accepts = $accept | where {|k| not ($mark and $k.mod == none and $k.key == enter) } | each {|k|
+        let id = if $k.mod == none { $k.keycode } else { $"($k.mod)_($k.keycode)" }
+        let previous = previous-event $index $defaults $k.modifier $k.keycode
         let event = if $mark {
             if ($previous | can-select) { mark-accept-event $previous --keep-selection } else { mark-accept-event $previous }
-        } else if (do $is_enter $k) or ($previous | can-select) {
+        } else if ($k.mod == none and $k.key == enter) or ($previous | can-select) {
             {until: [{send: menuaccept} $previous]}
         } else {
             accept-event $previous
@@ -487,14 +514,14 @@ def control-bindings [index: record, mode: string, accept: list]: nothing -> lis
     # the bare event runs.
     let enter_binding = if $mark {
         [{id: enter, modifier: none, keycode: enter, event: (enter-event $enter)}]
-    } else if (do $is_accept enter) { [] } else {
+    } else if enter in $unmodified { [] } else {
         [{id: enter, modifier: none, keycode: enter, event: {until: [[{send: esc} $enter] $enter]}}]
     }
     # Unless Right is an accept key, Right closes the menu and does what it did
     # before, like Left: Reedline's default Right is swallowed by an open IDE
     # menu (`MenuRight`).
-    let right_binding = if (do $is_accept right) { [] } else {
-        let right = previous-event $index $mode none right
+    let right_binding = if right in $unmodified { [] } else {
+        let right = previous-event $index $defaults none right
         [{id: right, modifier: none, keycode: right, event: {until: [(do $close $right) $right]}}]
     }
     # In a mark mode Tab, Shift+Tab, Ctrl+N and Ctrl+P select candidates, Esc
@@ -505,11 +532,11 @@ def control-bindings [index: record, mode: string, accept: list]: nothing -> lis
     # applied cursor edit ends Reedline's history traversal). They still move
     # through an open menu and keep an existing mark.
     let mark_bindings = if not $mark { [] } else {
-        let backtab = previous-event $index $mode shift backtab
-        let esc = previous-event $index $mode none esc
-        let backspace = previous-event $index $mode none backspace
+        let backtab = previous-event $index $defaults shift backtab
+        let esc = previous-event $index $defaults none esc
+        let backspace = previous-event $index $defaults none backspace
         let ctrl_nav = $NAV_CTRL_KEYS | items {|key, nav|
-            let previous = previous-event $index $mode control $"char_($key)"
+            let previous = previous-event $index $defaults control $"char_($key)"
             {id: $"control_char_($key)", modifier: control, keycode: $"char_($key)", event: (nav-event {send: $nav} $previous)}
         }
         [
