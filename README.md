@@ -72,6 +72,12 @@ Running `enable` again replaces the previous installation without duplicates.
 `completions.persistent_menus` to `false` and `color_config.selection` to
 `{attr: n}`; `disable` restores them unless you changed them in the meantime.
 
+To keep shell startup fast, `enable` caches the keybindings it generates in
+`$nu.cache-dir/nu-autocomplete`. The cache is rebuilt automatically when its
+inputs change (nu-autocomplete or Nushell version, `enable` options, your other
+keybindings), and `enable` works without it if it cannot be read or written.
+Deleting the directory is always safe.
+
 ## Keys
 
 | Key                | Menu open, nothing selected                  | Candidate selected                                 | Menu closed                          |

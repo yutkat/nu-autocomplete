@@ -366,6 +366,95 @@ def "test vi normal mode is never bound" [] {
     assert equal ($b | where mode != emacs and mode != vi_insert | length) 0
 }
 
+# --- cache ------------------------------------------------------------------
+
+# Run `body` with a new temporary directory, removed afterwards.
+def with-temp-dir [body: closure]: nothing -> nothing {
+    let dir = mktemp --directory
+    let err = try { do $body $dir; null } catch {|e| $e.msg }
+    rm --recursive --force $dir
+    if $err != null { error make {msg: $err} }
+}
+
+def read-cache [dir: string]: nothing -> any {
+    open --raw ($dir | path join $CACHE_FILE) | from msgpack
+}
+
+def write-cache [dir: string]: any -> nothing {
+    to msgpack | save --raw --force ($dir | path join $CACHE_FILE)
+}
+
+def "test cached generate stores and reuses the generate result" [] {
+    with-temp-dir {|dir|
+        let user = [(user-binding my_bang none "char_!" emacs {edit: insertstring, value: "!!"})]
+        let fresh = generate all $user
+        assert equal (cached-generate $dir all $user) $fresh "miss"
+        assert equal (read-cache $dir | get generated) $fresh
+        assert equal (cached-generate $dir all $user) $fresh "hit"
+        # A hit comes from the file: an entry edited under the same key is returned.
+        let c = read-cache $dir
+        {key: $c.key, generated: ($c.generated | update skipped [marker])} | write-cache $dir
+        assert equal (cached-generate $dir all $user | get skipped) [marker]
+    }
+}
+
+def "test cached generate misses and rewrites on changed input" [] {
+    with-temp-dir {|dir|
+        let user = [(user-binding my_right none right emacs {send: right})]
+        let calls = [
+            [space [] [ctrl+y]]
+            [space [] [right]]
+            [space $user [right]]
+            [all $user [right]]
+        ]
+        let keys = $calls | each {|c|
+            assert equal (cached-generate $dir $c.0 $c.1 $c.2) (generate $c.0 $c.1 $c.2)
+            assert equal (read-cache $dir | get generated) (generate $c.0 $c.1 $c.2)
+            read-cache $dir | get key
+        }
+        assert equal ($keys | uniq | length) ($calls | length)
+        assert equal (ls $dir | get name | path basename) [$CACHE_FILE] "one file"
+    }
+}
+
+def "test cached generate falls back on a corrupt cache file" [] {
+    with-temp-dir {|dir|
+        let fresh = generate space []
+        "not msgpack" | save --raw ($dir | path join $CACHE_FILE)
+        assert equal (cached-generate $dir space []) $fresh
+        assert equal (read-cache $dir | get generated) $fresh "rewritten"
+        let key = read-cache $dir | get key
+        for bad in [{key: $key} {key: $key, generated: {bindings: "x", skipped: []}} {key: $key, generated: {bindings: []}} [$key]] {
+            $bad | write-cache $dir
+            assert equal (cached-generate $dir space []) $fresh ($bad | to nuon)
+        }
+    }
+}
+
+def "test cached generate works without a writable cache dir" [] {
+    with-temp-dir {|dir|
+        # A dir below a regular file can be neither created nor written.
+        let blocker = $dir | path join file
+        "" | save $blocker
+        let bad = $blocker | path join sub
+        assert equal (cached-generate $bad space []) (generate space [])
+        assert equal (cached-generate $bad space []) (generate space [])
+        assert equal (ls $dir | get name | path basename) [file]
+    }
+    assert equal (cached-generate null space []) (generate space [])
+}
+
+def "test cached generate skips values the cache cannot keep" [] {
+    with-temp-dir {|dir|
+        # A closure cannot be serialized, and msgpack turns a filesize into an int.
+        for event in [{send: enter, cl: {|| 1 }} {send: enter, size: 1kb}] {
+            let user = [(user-binding my_enter none enter emacs $event)]
+            assert equal (cached-generate $dir space $user) (generate space $user)
+            assert equal (ls $dir | length) 0
+        }
+    }
+}
+
 # --- enable / disable -------------------------------------------------------
 
 def --env "test use alone does not change config" [] {
@@ -548,6 +637,11 @@ const TESTS = [
     "test accept keys chain to reedline defaults of any key"
     "test accept keys that select do not reopen the menu"
     "test vi normal mode is never bound"
+    "test cached generate stores and reuses the generate result"
+    "test cached generate misses and rewrites on changed input"
+    "test cached generate falls back on a corrupt cache file"
+    "test cached generate works without a writable cache dir"
+    "test cached generate skips values the cache cannot keep"
     "test use alone does not change config"
     "test enable installs bindings and completion settings"
     "test enable is idempotent"
@@ -601,6 +695,11 @@ def run-test [name: string]: nothing -> any {
             "test accept keys chain to reedline defaults of any key" => { test accept keys chain to reedline defaults of any key }
             "test accept keys that select do not reopen the menu" => { test accept keys that select do not reopen the menu }
             "test vi normal mode is never bound" => { test vi normal mode is never bound }
+            "test cached generate stores and reuses the generate result" => { test cached generate stores and reuses the generate result }
+            "test cached generate misses and rewrites on changed input" => { test cached generate misses and rewrites on changed input }
+            "test cached generate falls back on a corrupt cache file" => { test cached generate falls back on a corrupt cache file }
+            "test cached generate works without a writable cache dir" => { test cached generate works without a writable cache dir }
+            "test cached generate skips values the cache cannot keep" => { test cached generate skips values the cache cannot keep }
             "test use alone does not change config" => { test use alone does not change config }
             "test enable installs bindings and completion settings" => { test enable installs bindings and completion settings }
             "test enable is idempotent" => { test enable is idempotent }

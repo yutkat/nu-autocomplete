@@ -1,7 +1,8 @@
 # Generation of the keybindings nu-autocomplete installs.
 #
 # Everything here is pure: it takes the current `$env.config.keybindings` and
-# returns new entries, so it can be tested without touching the config.
+# returns new entries, so it can be tested without touching the config. Only
+# `cached-generate` also reads and writes a cache file.
 
 # Prefix of every keybinding name nu-autocomplete owns.
 export const NAME_PREFIX = "nu_autocomplete_"
@@ -592,4 +593,66 @@ export def generate [trigger: string, existing: list, accept_keys: list<string> 
         bindings: ($per_mode | get bindings | flatten)
         skipped: ($per_mode | get skipped | flatten)
     }
+}
+
+# This file. Its source is part of the cache key, so editing or upgrading the
+# module invalidates cached bindings.
+const SELF = path self
+
+# The single cache file in a cache dir; each miss overwrites it.
+export const CACHE_FILE = "bindings.msgpack"
+
+# Hash of everything `generate` reads. Fails on existing bindings that
+# msgpack cannot reproduce exactly (a closure, or a filesize that comes back
+# as an int): `generate` copies their events into its result, which then would
+# not survive the cache either.
+def cache-key [trigger: string, existing: list, accept_keys: list<string>]: nothing -> string {
+    let packed = $existing | to msgpack
+    if ($packed | from msgpack) != $existing {
+        error make {msg: "existing keybindings do not survive msgpack"}
+    }
+    let v = version
+    {
+        source: (open --raw $SELF)
+        nushell: [$v.version ($v.commit_hash? | default "")]
+        trigger: $trigger
+        accept_keys: $accept_keys
+        existing: $packed
+        defaults: (keybindings default)
+    } | to msgpack | hash sha256
+}
+
+# `generate`, with its result cached in `dir` (no caching when null). Any
+# cache failure falls back to `generate`; errors from `generate` itself
+# propagate as usual.
+export def cached-generate [dir: any, trigger: string, existing: list, accept_keys: list<string> = $DEFAULT_ACCEPT_KEYS]: nothing -> record<bindings: list, skipped: list> {
+    let key = if $dir == null { null } else { try { cache-key $trigger $existing $accept_keys } catch { null } }
+    if $key == null {
+        return (generate $trigger $existing $accept_keys)
+    }
+    let file = $dir | path join $CACHE_FILE
+    let cached = try {
+        let c = open --raw $file | from msgpack
+        let g = $c.generated
+        # `match` checks for lists without walking them as `describe` does.
+        match [$c.key $g.bindings $g.skipped] {
+            [$k, [..$_], [..$_]] if $k == $key => {bindings: $g.bindings, skipped: $g.skipped}
+            _ => null
+        }
+    } catch { null }
+    if $cached != null {
+        return $cached
+    }
+    let generated = generate $trigger $existing $accept_keys
+    # Write to a temporary file and rename it, so a concurrent enable never
+    # reads a partial file.
+    let tmp = $dir | path join $"($CACHE_FILE).($nu.pid).tmp"
+    try {
+        mkdir $dir
+        {key: $key, generated: $generated} | to msgpack | save --raw --force $tmp
+        mv --force $tmp $file
+    } catch {
+        try { rm --force $tmp }
+    }
+    $generated
 }

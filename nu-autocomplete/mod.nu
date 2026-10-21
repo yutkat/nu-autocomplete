@@ -3,7 +3,7 @@
 # `use nu-autocomplete` only defines commands; nothing changes until
 # `nu-autocomplete enable` is run.
 
-use keybindings.nu [MENU AUTO_MENU DEFAULT_ACCEPT_KEYS auto-menu generate is-ours parse-accept-keys]
+use keybindings.nu [MENU AUTO_MENU DEFAULT_ACCEPT_KEYS auto-menu cached-generate is-ours parse-accept-keys]
 
 # Completion settings applied on enable: no lone-candidate auto-insert, no
 # common-prefix auto-insert, and an open menu closes when the line is emptied.
@@ -12,6 +12,12 @@ const SETTINGS = {quick: false, partial: false, persistent_menus: false}
 # Line editor selection style applied on enable: the selection that marks a
 # selected candidate is drawn like plain text instead of in reverse video.
 const SELECTION_STYLE = {attr: n}
+
+# Where enable caches generated keybindings, or null without a cache dir.
+def cache-dir []: nothing -> any {
+    let base = $nu.cache-dir? | default ""
+    if ($base | is-empty) { null } else { $base | path join nu-autocomplete }
+}
 
 def state []: nothing -> record {
     $env.__NU_AUTOCOMPLETE? | default {enabled: false}
@@ -56,7 +62,7 @@ export def --env enable [
     $env.config.menus = [($env.config.menus | where name == $MENU | first | auto-menu)]
 
     let others = $env.config.keybindings | where {|kb| not ($kb | is-ours) }
-    let generated = generate $trigger $others $accept_keys
+    let generated = cached-generate (cache-dir) $trigger $others $accept_keys
     set-keybindings ($others ++ $generated.bindings)
 
     # Remember only the settings that actually change, with their old values.
