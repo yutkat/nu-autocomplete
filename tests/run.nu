@@ -463,6 +463,22 @@ def "test cached generate works without a writable cache dir" [] {
     assert equal (cached-generate null space []) (generate space [])
 }
 
+def "test cached generate ignores mv and rm aliases" [] {
+    with-temp-dir {|dir|
+        # Aliases defined before `use` apply inside the module, as in a config.
+        let script = $"
+            alias mv = mv -i
+            alias rm = rm -i
+            use ($ROOT | path join nu-autocomplete keybindings.nu) cached-generate
+            cached-generate ($dir | to nuon) space [] | ignore
+            cached-generate ($dir | to nuon) all [] | ignore
+        "
+        ^$nu.current-exe -n -c $script o+e>| ignore
+        assert equal (read-cache $dir | get generated) (generate all []) "the second write replaced the first"
+        assert equal (ls $dir | get name | path basename) [$CACHE_FILE]
+    }
+}
+
 def "test cached generate skips values the cache cannot keep" [] {
     with-temp-dir {|dir|
         # A closure cannot be serialized, and msgpack turns a filesize into an int.
@@ -726,6 +742,7 @@ const TESTS = [
     "test cached generate misses and rewrites on changed input"
     "test cached generate falls back on a corrupt cache file"
     "test cached generate works without a writable cache dir"
+    "test cached generate ignores mv and rm aliases"
     "test cached generate skips values the cache cannot keep"
     "test use alone does not change config"
     "test enable installs bindings and completion settings"
@@ -790,6 +807,7 @@ def run-test [name: string]: nothing -> any {
             "test cached generate misses and rewrites on changed input" => { test cached generate misses and rewrites on changed input }
             "test cached generate falls back on a corrupt cache file" => { test cached generate falls back on a corrupt cache file }
             "test cached generate works without a writable cache dir" => { test cached generate works without a writable cache dir }
+            "test cached generate ignores mv and rm aliases" => { test cached generate ignores mv and rm aliases }
             "test cached generate skips values the cache cannot keep" => { test cached generate skips values the cache cannot keep }
             "test use alone does not change config" => { test use alone does not change config }
             "test enable installs bindings and completion settings" => { test enable installs bindings and completion settings }

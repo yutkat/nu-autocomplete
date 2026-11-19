@@ -667,14 +667,15 @@ export def cached-generate [dir: any, trigger: string, existing: list, accept_ke
     }
     let generated = generate $trigger $existing $accept_keys
     # Write to a temporary file and rename it, so a concurrent enable never
-    # reads a partial file.
+    # reads a partial file. `^mv` and `^rm` are external because aliases from
+    # the config (`alias mv = mv -i`) also apply inside this module.
     let tmp = $dir | path join $"($CACHE_FILE).($nu.pid).tmp"
     try {
         mkdir $dir
         {key: $key, generated: $generated} | to msgpack | save --raw --force $tmp
-        mv --force $tmp $file
+        ^mv -f $tmp $file
     } catch {
-        try { rm --force $tmp }
+        try { ^rm -f $tmp }
     }
     $generated
 }
