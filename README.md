@@ -63,6 +63,7 @@ XDG_CONFIG_HOME=$(mktemp -d) nu --config examples/minimal-config.nu
 nu-autocomplete enable                               # letters, digits, ASCII symbols and Space open the menu
 nu-autocomplete enable --trigger space               # only Space opens the menu
 nu-autocomplete enable --accept-keys [enter ctrl+y]  # choose the keys that accept a candidate
+nu-autocomplete enable --no-history-hint             # no history entry as the first candidate
 nu-autocomplete status                               # current state, accept keys, skipped keys
 nu-autocomplete disable                              # remove the keybindings and restore settings
 ```
@@ -71,6 +72,20 @@ Running `enable` again replaces the previous installation without duplicates.
 `enable` sets `completions.quick`, `completions.partial` and
 `completions.persistent_menus` to `false` and `color_config.selection` to
 `{attr: n}`; `disable` restores them unless you changed them in the meantime.
+
+### History hint
+
+Reedline hides its history hint (the grey rest of a previous command) while
+a menu is open, which is almost always with nu-autocomplete. With
+`$env.config.history.file_format = "sqlite"`, `enable` therefore gives
+`ide_completion_menu` and `nu_autocomplete_menu` a `source` that lists the
+newest history entry extending the line as the first candidate (described as
+`history`), followed by the usual completions. Accepting it replaces
+everything before the cursor.
+
+`enable --no-history-hint` turns this off. It is also skipped if
+`ide_completion_menu` already has a `source` of its own, and `disable`
+removes the source again. Plaintext history is not supported.
 
 To keep shell startup fast, `enable` caches the keybindings it generates in
 `$nu.cache-dir/nu-autocomplete`. The cache is rebuilt automatically when its

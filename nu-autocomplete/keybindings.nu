@@ -300,6 +300,28 @@ export def auto-menu []: record -> record {
     $menu | upsert name $AUTO_MENU | upsert style ($style | upsert selected_text $text | upsert selected_match_text ($style.match_text? | default $text))
 }
 
+# Menu source that lists the newest entry of the SQLite history at `path`
+# extending the line before the usual completions. Reedline hides its history
+# hint while a menu is open, so this brings the hint back as the first
+# candidate. A source replaces the built-in completer, so the rest comes from
+# `commandline complete`.
+export def history-first-source [path: string]: nothing -> closure {
+    {|buffer, place|
+        let position = $place.cursor
+        let line = $buffer | str substring ..<$position
+        # Like the hint, only at the end of the line; accepting replaces the whole line.
+        let hint = if $position != ($buffer | str length) or ($line | str trim | is-empty) { [] } else {
+            # Query SQLite directly: `history` loads every entry, which takes ~70ms per keystroke.
+            try {
+                open $path
+                | query db "SELECT command_line FROM history WHERE substr(command_line, 1, length(?1)) = ?1 AND command_line != ?1 ORDER BY id DESC LIMIT 1" --params [$line]
+                | each {|row| {value: $row.command_line, description: history, span: {start: 0, end: $position}} }
+            } catch { [] }
+        }
+        $hint ++ ($line | commandline complete --detailed)
+    }
+}
+
 # Event for a trigger key: insert the char once, then open the menu.
 #
 # `menu` is a no-op (Inapplicable) while a menu is already open, so it never

@@ -384,6 +384,25 @@ def write-cache [dir: string]: any -> nothing {
     to msgpack | save --raw --force ($dir | path join $CACHE_FILE)
 }
 
+def history-hints []: list -> list {
+    where {|c| ($c.description? | default "") == history }
+}
+
+def "test history source lists the newest extending entry first" [] {
+    with-temp-dir {|dir|
+        let db = $dir | path join history.sqlite3
+        [[id command_line]; [1 "git commit -m old"] [2 "git checkout main"] [3 "git commit -m new"] [4 "git c"]]
+        | into sqlite $db --table-name history
+        let source = history-first-source $db
+        let candidates = do $source "git c" {cursor: 5}
+        assert equal ($candidates | first) {value: "git commit -m new", description: history, span: {start: 0, end: 5}}
+        assert equal ($candidates | history-hints | length) 1
+        assert equal (do $source "git commit -m new" {cursor: 17} | history-hints) [] "an equal entry is no hint"
+        assert equal (do $source "  " {cursor: 2} | history-hints) [] "no hint on a blank line"
+        assert equal (do (history-first-source ($dir | path join missing.sqlite3)) "git c" {cursor: 5} | history-hints) []
+    }
+}
+
 def "test cached generate stores and reuses the generate result" [] {
     with-temp-dir {|dir|
         let user = [(user-binding my_bang none "char_!" emacs {edit: insertstring, value: "!!"})]
@@ -593,6 +612,71 @@ def --env "test disable keeps keybindings the user added after enable" [] {
     assert equal ($env.config.keybindings | where name == later | length) 1
 }
 
+def menu-source [name: string]: nothing -> any {
+    $env.config.menus | where name == $name | get 0.source
+}
+
+def --env set-menu-source [source: any]: nothing -> nothing {
+    $env.config.menus = ($env.config.menus | each {|m| if $m.name == ide_completion_menu { $m | merge {source: $source} } else { $m } })
+}
+
+def --env "test enable keeps the other menus" [] {
+    $env.config.history.file_format = "plaintext"
+    let before = $env.config.menus
+    nu-autocomplete enable
+    assert equal ($env.config.menus | where name != nu_autocomplete_menu) $before
+    assert equal (menu-source ide_completion_menu) null
+    assert equal (nu-autocomplete status | get history_hint) false
+}
+
+def --env "test sqlite history adds the history source and disable removes it" [] {
+    $env.config.history.file_format = "sqlite"
+    let before = $env.config.menus
+    nu-autocomplete enable
+    nu-autocomplete enable
+    let ours = history-first-source $nu.history-path
+    assert equal (menu-source ide_completion_menu) $ours
+    assert equal (menu-source nu_autocomplete_menu) $ours
+    assert equal (nu-autocomplete status | get history_hint) true
+    nu-autocomplete disable
+    assert equal ($env.config.menus | where name != nu_autocomplete_menu) $before
+}
+
+def --env "test enable without the history hint leaves the menu source unset" [] {
+    $env.config.history.file_format = "sqlite"
+    let before = $env.config.menus
+    nu-autocomplete enable --no-history-hint
+    assert equal ($env.config.menus | where name != nu_autocomplete_menu) $before
+    assert equal (menu-source nu_autocomplete_menu) null
+    assert equal (nu-autocomplete status | get history_hint) false
+    nu-autocomplete enable
+    assert equal (menu-source ide_completion_menu) (history-first-source $nu.history-path)
+    nu-autocomplete enable --no-history-hint
+    assert equal ($env.config.menus | where name != nu_autocomplete_menu) $before
+}
+
+def --env "test enable keeps a menu source the user set before" [] {
+    $env.config.history.file_format = "sqlite"
+    let mine = {|buffer| [] }
+    set-menu-source $mine
+    let before = $env.config.menus
+    nu-autocomplete enable
+    assert equal (menu-source ide_completion_menu) $mine
+    assert equal (menu-source nu_autocomplete_menu) $mine
+    assert equal (nu-autocomplete status | get history_hint) false
+    nu-autocomplete disable
+    assert equal ($env.config.menus | where name != nu_autocomplete_menu) $before
+}
+
+def --env "test disable keeps a menu source the user set after enable" [] {
+    $env.config.history.file_format = "sqlite"
+    nu-autocomplete enable
+    let mine = {|buffer| [] }
+    set-menu-source $mine
+    nu-autocomplete disable
+    assert equal (menu-source ide_completion_menu) $mine
+}
+
 def --env "test disable without enable is a no-op" [] {
     let before = $env.config
     nu-autocomplete disable
@@ -618,6 +702,7 @@ const TESTS = [
     "test mark accept event accepts only on a marked line"
     "test backspace event runs the previous backspace once"
     "test auto menu hides the selection"
+    "test history source lists the newest extending entry first"
     "test accept event reopens the menu only after an accept"
     "test generated bindings are named, scoped to emacs and vi insert"
     "test generated uppercase binding inserts the uppercase char"
@@ -656,6 +741,11 @@ const TESTS = [
     "test disable unsets a selection style that was unset"
     "test disable keeps a selection style the user set after enable"
     "test disable keeps keybindings the user added after enable"
+    "test enable keeps the other menus"
+    "test sqlite history adds the history source and disable removes it"
+    "test enable without the history hint leaves the menu source unset"
+    "test enable keeps a menu source the user set before"
+    "test disable keeps a menu source the user set after enable"
     "test disable without enable is a no-op"
 ]
 
@@ -676,6 +766,7 @@ def run-test [name: string]: nothing -> any {
             "test mark accept event accepts only on a marked line" => { test mark accept event accepts only on a marked line }
             "test backspace event runs the previous backspace once" => { test backspace event runs the previous backspace once }
             "test auto menu hides the selection" => { test auto menu hides the selection }
+            "test history source lists the newest extending entry first" => { test history source lists the newest extending entry first }
             "test accept event reopens the menu only after an accept" => { test accept event reopens the menu only after an accept }
             "test generated bindings are named, scoped to emacs and vi insert" => { test generated bindings are named, scoped to emacs and vi insert }
             "test generated uppercase binding inserts the uppercase char" => { test generated uppercase binding inserts the uppercase char }
@@ -714,6 +805,11 @@ def run-test [name: string]: nothing -> any {
             "test disable unsets a selection style that was unset" => { test disable unsets a selection style that was unset }
             "test disable keeps a selection style the user set after enable" => { test disable keeps a selection style the user set after enable }
             "test disable keeps keybindings the user added after enable" => { test disable keeps keybindings the user added after enable }
+            "test enable keeps the other menus" => { test enable keeps the other menus }
+            "test sqlite history adds the history source and disable removes it" => { test sqlite history adds the history source and disable removes it }
+            "test enable without the history hint leaves the menu source unset" => { test enable without the history hint leaves the menu source unset }
+            "test enable keeps a menu source the user set before" => { test enable keeps a menu source the user set before }
+            "test disable keeps a menu source the user set after enable" => { test disable keeps a menu source the user set after enable }
             "test disable without enable is a no-op" => { test disable without enable is a no-op }
             _ => (error make {msg: $"no such test: ($name)"})
         }
