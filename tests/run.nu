@@ -650,7 +650,7 @@ def --env "test sqlite history adds the history source and disable removes it" [
     let before = $env.config.menus
     nu-autocomplete enable
     nu-autocomplete enable
-    let ours = history-first-source $nu.history-path
+    let ours = history-first-source
     assert equal (menu-source ide_completion_menu) $ours
     assert equal (menu-source nu_autocomplete_menu) $ours
     assert equal (nu-autocomplete status | get history_hint) true
@@ -666,7 +666,7 @@ def --env "test enable without the history hint leaves the menu source unset" []
     assert equal (menu-source nu_autocomplete_menu) null
     assert equal (nu-autocomplete status | get history_hint) false
     nu-autocomplete enable
-    assert equal (menu-source ide_completion_menu) (history-first-source $nu.history-path)
+    assert equal (menu-source ide_completion_menu) (history-first-source)
     nu-autocomplete enable --no-history-hint
     assert equal ($env.config.menus | where name != nu_autocomplete_menu) $before
 }

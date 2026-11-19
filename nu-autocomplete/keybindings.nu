@@ -301,11 +301,12 @@ export def auto-menu []: record -> record {
 }
 
 # Menu source that lists the newest entry of the SQLite history at `path`
-# extending the line before the usual completions. Reedline hides its history
-# hint while a menu is open, so this brings the hint back as the first
-# candidate. A source replaces the built-in completer, so the rest comes from
-# `commandline complete`.
-export def history-first-source [path: string]: nothing -> closure {
+# (default: `$nu.history-path`, read on each call) extending the line before
+# the usual completions. At autoload time `$nu.history-path` is not yet the
+# configured path. Reedline hides its history hint while a menu is open, so
+# this brings the hint back as the first candidate. A source replaces the
+# built-in completer, so the rest comes from `commandline complete`.
+export def history-first-source [path?: string]: nothing -> closure {
     {|buffer, place|
         let position = $place.cursor
         let line = $buffer | str substring ..<$position
@@ -313,7 +314,7 @@ export def history-first-source [path: string]: nothing -> closure {
         let hint = if $position != ($buffer | str length) or ($line | str trim | is-empty) { [] } else {
             # Query SQLite directly: `history` loads every entry, which takes ~70ms per keystroke.
             try {
-                open $path
+                open ($path | default $nu.history-path)
                 | query db "SELECT command_line FROM history WHERE substr(command_line, 1, length(?1)) = ?1 AND command_line != ?1 ORDER BY id DESC LIMIT 1" --params [$line]
                 | each {|row| {value: $row.command_line, description: history, span: {start: 0, end: $position}} }
             } catch { [] }

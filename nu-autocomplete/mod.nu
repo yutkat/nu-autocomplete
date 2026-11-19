@@ -78,7 +78,7 @@ export def --env enable [
     # `AUTO_MENU` is derived from the current `MENU`. Menus cannot be removed
     # again; disable leaves it defined but unused.
     let history_hint = not $no_history_hint and $env.config.history.file_format == "sqlite" and (current-menu).source? == null
-    let menu = if $history_hint { current-menu | merge {source: (history-first-source $nu.history-path)} } else { current-menu }
+    let menu = if $history_hint { current-menu | merge {source: (history-first-source)} } else { current-menu }
     set-menus [$menu ($menu | auto-menu)]
 
     let others = $env.config.keybindings | where {|kb| not ($kb | is-ours) }
@@ -138,7 +138,7 @@ export def --env disable []: nothing -> nothing {
         }
     }
 
-    if ($st.history_hint? | default false) and (current-menu).source? == (history-first-source $nu.history-path) {
+    if ($st.history_hint? | default false) and (current-menu).source? == (history-first-source) {
         set-menus [(current-menu | merge {source: null})]
     }
 
